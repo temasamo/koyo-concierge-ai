@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "古窯 旅コンシェルAI（LAB）",
+  title: "古窯 旅コンシェルAI",
 };
 
 export default function KoyoLabLayout({

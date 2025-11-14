@@ -18,7 +18,7 @@ export default function ChatContainer({
       <p className="text-xs text-gray-600 mb-2">※ 開発LAB版</p>
 
       <h1 className="text-2xl font-bold mb-4 text-gray-900">
-        古窯 旅コンシェルAI（LAB）
+        古窯 旅コンシェルAI
       </h1>
 
       <div className="flex gap-2 mb-3 text-sm">
