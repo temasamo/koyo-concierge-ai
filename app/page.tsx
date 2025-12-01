@@ -1,12 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
-import { useKoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
+import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
 
 type Msg = { role: "user" | "assistant"; content: string };
+
+// モードごとの初期メッセージ
+const INITIAL_MESSAGES: Record<KoyoMode, string> = {
+  before: "古窯の旅コンシェルAIでございます。旅前のご準備、お手伝いさせていただきます。まずは、どのような旅をお考えかお聞かせください。",
+  stay: "古窯のフロントスタッフでございます。ご滞在中のご案内をさせていただきます。何かご不明な点やご要望がございましたら、お気軽にお申し付けください。",
+  after: "古窯の旅コンシェルAIです。ご宿泊ありがとうございました。旅の思い出を大切に、何かご不明な点やお困りのことがございましたら、お気軽にお尋ねください。",
+};
 
 export default function Page() {
   const { mode, setMode } = useKoyoMode();
@@ -14,10 +21,19 @@ export default function Page() {
   const [messages, setMessages] = useState<Msg[]>([
     {
       role: "assistant",
-      content:
-        "古窯旅館の旅コンシェルAIです。（開発モード）どのようなお手伝いをいたしましょうか？",
+      content: INITIAL_MESSAGES.before,
     },
   ]);
+
+  // モードが変わったときに初期メッセージを更新
+  useEffect(() => {
+    setMessages([
+      {
+        role: "assistant",
+        content: INITIAL_MESSAGES[mode],
+      },
+    ]);
+  }, [mode]);
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
@@ -41,8 +57,11 @@ export default function Page() {
         { role: "user", content: inputMessage }
       ];
 
-      // ③ API コール
-      const res = await fetch("/api/koyo/before", {
+      // ③ モードに応じてAPIエンドポイントを決定
+      const apiEndpoint = `/api/koyo/${mode}`;
+
+      // ④ API コール
+      const res = await fetch(apiEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
