@@ -3,13 +3,18 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
-
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
   process.env.KOYO_STAY_MODEL || "gpt-4o-mini";
+
+// OpenAIクライアントを取得する関数（ビルド時のエラーを回避）
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY environment variable is not set");
+  }
+  return new OpenAI({ apiKey });
+}
 
 /**
  * 旅中モードのシステムプロンプト
@@ -82,6 +87,7 @@ export async function POST(req: NextRequest) {
       ...userMessages,
     ];
 
+    const openai = getOpenAIClient();
     const completion = await openai.chat.completions.create({
       model: CHAT_MODEL,
       messages,
