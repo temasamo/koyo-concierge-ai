@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
 import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
+import { useSpotStore } from "@/store/spots";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -16,6 +18,7 @@ const INITIAL_MESSAGES: Record<KoyoMode, string> = {
 };
 
 export default function Page() {
+  const router = useRouter();
   const { mode, setMode } = useKoyoMode();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Msg[]>([
@@ -25,7 +28,12 @@ export default function Page() {
     },
   ]);
 
-  // モードが変わったときに初期メッセージを更新
+  // マップ用スポット状態管理
+  const setSpots = useSpotStore((s) => s.setSpots);
+  const clearSpots = useSpotStore((s) => s.clearSpots);
+  const spots = useSpotStore((s) => s.spots);
+
+  // モードが変わったときに初期メッセージを更新し、spotsをクリア
   useEffect(() => {
     setMessages([
       {
@@ -33,7 +41,9 @@ export default function Page() {
         content: INITIAL_MESSAGES[mode],
       },
     ]);
-  }, [mode]);
+    // モード切り替え時に前のモードのspotsをクリア
+    clearSpots();
+  }, [mode, clearSpots]);
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
@@ -75,6 +85,19 @@ export default function Page() {
 
       const data = await res.json();
 
+      // デバッグログ
+      console.log("[page.tsx] API response:", data);
+      console.log("[page.tsx] spots:", data.spots);
+
+      // スポットをマップ用に保存
+      if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
+        console.log("[page.tsx] Setting spots:", data.spots);
+        setSpots(data.spots);
+      } else {
+        console.log("[page.tsx] No spots found, clearing");
+        clearSpots();
+      }
+
       // ④ AI の返答を追加
       setMessages(prev => [
         ...prev,
@@ -106,6 +129,18 @@ export default function Page() {
 
       <div className="relative z-10 flex flex-col items-center pt-8 pb-24 px-4">
         <ChatContainer mode={mode} setMode={setMode} messages={messages} isLoading={isLoading} />
+
+        {/* 地図で見るボタン（spotsがある場合のみ表示） */}
+        {spots.length > 0 && (
+          <div className="mt-4 w-full max-w-[480px] px-4">
+            <button
+              onClick={() => router.push("/map")}
+              className="w-full px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 transition-colors"
+            >
+              地図で見る
+            </button>
+          </div>
+        )}
 
         <div className="fixed left-0 right-0 bottom-0 pb-4 flex justify-center">
           <div className="w-full max-w-[480px] px-4">

@@ -53,9 +53,10 @@ function extractSpotsFromReply(reply: string): Spot[] | undefined {
       return undefined;
     }
 
-    // 型チェック（基本的な検証）
+    // 型チェックと緯度経度の範囲検証（山形県の範囲内かチェック）
     const validSpots = spots.filter((spot) => {
-      return (
+      // 基本的な型チェック
+      const basicCheck = (
         typeof spot.id === "string" &&
         typeof spot.name === "string" &&
         typeof spot.lat === "number" &&
@@ -67,6 +68,21 @@ function extractSpotsFromReply(reply: string): Spot[] | undefined {
         typeof spot.rating === "number" &&
         typeof spot.stayMinutes === "number"
       );
+
+      if (!basicCheck) return false;
+
+      // 山形県の範囲内かチェック（緯度: 37.8～38.9, 経度: 139.5～140.5）
+      const isInYamagataRange = (
+        spot.lat >= 37.8 && spot.lat <= 38.9 &&
+        spot.lng >= 139.5 && spot.lng <= 140.5
+      );
+
+      if (!isInYamagataRange) {
+        console.warn(`[koyo-before] Spot "${spot.name}" has invalid coordinates: lat=${spot.lat}, lng=${spot.lng}`);
+        return false;
+      }
+
+      return true;
     });
 
     return validSpots.length > 0 ? validSpots : undefined;
@@ -147,9 +163,21 @@ const SYSTEM_PROMPT = `
 - JSONの前後に説明文を付けない
 - JSONの中に追加フィールドを勝手に入れない
 - lat, lng は number（文字列で返さない）
+- **lat, lng は必ず正確な値を使用すること（推測や近似値は禁止）**
 - スポット数は 3〜6件にする（多すぎ禁止）
 - 不確かなデータは入れず「空文字」「0」で返す
 - Googleの営業時間や混雑情報など *APIで取得すべき情報は書かない*
+
+### **主要スポットの正確な緯度経度（参考）**
+以下は主要スポットの正確な緯度経度です。同様の精度で他のスポットも指定してください。
+
+- 上山城: lat: 38.1269, lng: 140.2984
+- 蔵王温泉: lat: 38.1625, lng: 140.5533
+- 蔵王刈田峠: lat: 38.1811, lng: 140.5686
+- 山形市（中心部）: lat: 38.2407, lng: 140.3633
+- 天童市（中心部）: lat: 38.3592, lng: 140.3694
+
+**重要**: 緯度経度は必ず実在する正確な座標を使用してください。不確かな場合は、そのスポットをJSONに含めないでください。
 
 ---
 
