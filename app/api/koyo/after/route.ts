@@ -71,10 +71,10 @@ function extractSpotsFromReply(reply: string): Spot[] | undefined {
 
       if (!basicCheck) return false;
 
-      // 山形県の範囲内かチェック（緯度: 37.8～38.9, 経度: 139.5～140.5）
+      // 山形県の範囲内かチェック（緯度: 37.8～38.9, 経度: 139.5～140.57）
       const isInYamagataRange = (
         spot.lat >= 37.8 && spot.lat <= 38.9 &&
-        spot.lng >= 139.5 && spot.lng <= 140.5
+        spot.lng >= 139.5 && spot.lng <= 140.57
       );
 
       if (!isInYamagataRange) {
