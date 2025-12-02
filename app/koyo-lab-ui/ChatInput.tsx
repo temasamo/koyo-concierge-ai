@@ -12,10 +12,8 @@ export default function ChatInput({
   disabled?: boolean;
 }) {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !disabled) {
-      e.preventDefault();
-      onSend(input);
-    }
+    // Enterキーでの送信を無効化（送信ボタンのみで送信）
+    // 誤送信を防ぐため
   };
 
   const handleSend = () => {
@@ -31,7 +29,7 @@ export default function ChatInput({
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={disabled}
-        className="flex-1 p-2 rounded border bg-white/80 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="flex-1 p-2 rounded border bg-white/80 text-gray-900 placeholder-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
         placeholder="メッセージを入力..."
       />
       <button

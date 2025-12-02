@@ -8,10 +8,12 @@ export default function ChatContainer({
   mode,
   setMode,
   messages,
+  isLoading,
 }: {
   mode: KoyoMode;
   setMode: (m: KoyoMode) => void;
   messages: Msg[];
+  isLoading?: boolean;
 }) {
   return (
     <div className="w-full max-w-[480px] bg-white/85 rounded-xl shadow-xl p-4 backdrop-blur">
@@ -67,6 +69,32 @@ export default function ChatContainer({
             </div>
           </div>
         ))}
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="px-3 py-2 rounded-2xl bg-gray-100 text-gray-900">
+              <span className="inline-flex items-center gap-1">
+                <span 
+                  className="animate-dot-blink"
+                  style={{ animationDelay: "0ms" }}
+                >
+                  ・
+                </span>
+                <span 
+                  className="animate-dot-blink"
+                  style={{ animationDelay: "200ms" }}
+                >
+                  ・
+                </span>
+                <span 
+                  className="animate-dot-blink"
+                  style={{ animationDelay: "400ms" }}
+                >
+                  ・
+                </span>
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

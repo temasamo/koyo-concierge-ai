@@ -17,36 +17,123 @@ function getOpenAIClient() {
 }
 
 /**
+ * スポット情報の型定義
+ */
+export type Spot = {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  category: "自然" | "歴史" | "遊ぶ" | "食べる";
+  description: string;
+  address: string;
+  imageUrl: string;
+  rating: number;
+  stayMinutes: number;
+};
+
+/**
+ * AIの応答からJSON配列を抽出する関数
+ * 正規表現で [...] の部分を抽出し、パースして返す
+ */
+function extractSpotsFromReply(reply: string): Spot[] | undefined {
+  try {
+    // JSON配列を抽出（複数スポットに対応）
+    const jsonMatch = reply.match(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g);
+    if (!jsonMatch) {
+      return undefined;
+    }
+
+    // 最初にマッチしたJSON配列を使用
+    const jsonString = jsonMatch[0];
+    const spots = JSON.parse(jsonString) as Spot[];
+
+    // 配列でない場合はundefined
+    if (!Array.isArray(spots)) {
+      return undefined;
+    }
+
+    // 型チェック（基本的な検証）
+    const validSpots = spots.filter((spot) => {
+      return (
+        typeof spot.id === "string" &&
+        typeof spot.name === "string" &&
+        typeof spot.lat === "number" &&
+        typeof spot.lng === "number" &&
+        ["自然", "歴史", "遊ぶ", "食べる"].includes(spot.category) &&
+        typeof spot.description === "string" &&
+        typeof spot.address === "string" &&
+        typeof spot.imageUrl === "string" &&
+        typeof spot.rating === "number" &&
+        typeof spot.stayMinutes === "number"
+      );
+    });
+
+    return validSpots.length > 0 ? validSpots : undefined;
+  } catch (error) {
+    console.error("[koyo-after] JSON extraction error:", error);
+    return undefined;
+  }
+}
+
+/**
+ * replyからJSON部分を除去してクリーンなメッセージを返す関数
+ */
+function cleanReplyMessage(reply: string): string {
+  // JSON配列の部分を正規表現で削除（複数スポットに対応）
+  const cleaned = reply.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
+
+  // 「--」や余計な区切り文字が残る場合も削除
+  return cleaned.replace(/--/g, "").trim();
+}
+
+/**
  * 帰宅後モードのシステムプロンプト
  * 若女将（48歳）
+ * JSONフォーマット出力対応版
  */
 const SYSTEM_PROMPT = `
-あなたは山形県・かみのやま温泉「古窯（こよう）」の旅館AIコンシェルジュです。
-帰宅後モードでは、宿をご利用いただいたお客様に向けて、
-若女将（48歳）として温かく丁寧にお声がけしてください。
+あなたは「古窯 旅コンシェルAI」の旅後専用アシスタントです。  
+ユーザーは旅館を出て自宅へ帰る途中です。  
+あなたの役割は、帰路の途中で立ち寄れる観光スポット・グルメ・景勝地を、  
+丁寧で温かい接客トーンで提案することです。
 
-◆ あなたの人格
-・古窯旅館の若女将の人格（48歳）
-・上品で柔らかく、落ち着いた接客口調
-・距離感は適度で、安心感と真心を大切に
+【返答構成（重要）】
+1. まず文章で「旅後」らしい丁寧な説明（接客）を行う。  
+   ・滞在のお礼  
+   ・帰路の安全を気遣う言葉  
+   ・帰り道に寄れるスポットの軽い紹介  
+   など、旅後にふさわしいトーンで書く。
 
-◆ 旅行後モードでの役割
-1. ご宿泊へのお礼と、旅の余韻を丁寧に扱う
-2. 帰宅後のケア（忘れ物・体調・写真整理など）を案内
-3. 口コミ投稿をご案内（※強制禁止）
-4. 古窯オンラインショップの商品を自然に案内（押し売り禁止）
-5. 四季の魅力を"ふんわり"と案内して次回の来館に繋げる
+2. 続けて、観光スポット情報を JSON 配列で返す。
+   ※文章と JSON は必ず両方返すこと。
+   ※JSON部分は下記フォーマットに完全準拠。
 
-◆ 応答スタイル
-・最初の一言は必ず「ご宿泊ありがとうございました」関連で始める
-・2〜4文の優しい語り口で返答
-・「もしよろしければ」「ご無理のない範囲で」など柔らかい表現
-・過度な営業は禁止
+【JSONフォーマット】
+[
+  {
+    "id": "unique-id",
+    "name": "スポット名",
+    "lat": 38.1234,
+    "lng": 140.1234,
+    "category": "自然" | "歴史" | "遊ぶ" | "食べる",
+    "description": "短い説明文",
+    "address": "住所",
+    "imageUrl": "",
+    "rating": 4.3,
+    "stayMinutes": 30
+  }
+]
 
-◆ 禁止事項
-・提供していないサービスを案内しない
-・押し売り・断定的すぎる表現は使わない
-・誤情報の断言は禁止
+【重要ルール】
+・カテゴリーは「自然・歴史・遊ぶ・食べる」の4種類のみ使用すること。  
+・必ず JSON 配列は文章の直後に置く。  
+・文章部分と JSON 部分は明確に区切ること（例：「---」）。  
+・スポット数は 2〜5 件。  
+・lat/lng は現実的な値を出すこと。  
+・説明文と JSON 内の description 内容が一致している必要はない。
+
+丁寧で心のこもった「旅後案内」をお願いします。
 `;
 
 /**
@@ -96,8 +183,15 @@ export async function POST(req: NextRequest) {
 
     const reply = completion.choices[0]?.message?.content ?? "";
 
+    // JSON配列を抽出
+    const spots = extractSpotsFromReply(reply);
+
+    // replyからJSON部分を除去してクリーンなメッセージにする
+    const cleanReply = cleanReplyMessage(reply);
+
     return NextResponse.json({
-      reply,
+      reply: cleanReply,
+      ...(spots && { spots }),
       usage: completion.usage,
     });
   } catch (error: any) {

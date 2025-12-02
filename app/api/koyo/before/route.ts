@@ -17,47 +17,144 @@ function getOpenAIClient() {
 }
 
 /**
+ * スポット情報の型定義
+ */
+export type Spot = {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  category: "自然" | "歴史" | "遊ぶ" | "食べる";
+  description: string;
+  address: string;
+  imageUrl: string;
+  rating: number;
+  stayMinutes: number;
+};
+
+/**
+ * AIの応答からJSON配列を抽出する関数
+ * 正規表現で [...] の部分を抽出し、パースして返す
+ */
+function extractSpotsFromReply(reply: string): Spot[] | undefined {
+  try {
+    // JSON配列を抽出（複数スポットに対応）
+    const jsonMatch = reply.match(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g);
+    if (!jsonMatch) {
+      return undefined;
+    }
+
+    // 最初にマッチしたJSON配列を使用
+    const jsonString = jsonMatch[0];
+    const spots = JSON.parse(jsonString) as Spot[];
+
+    // 配列でない場合はundefined
+    if (!Array.isArray(spots)) {
+      return undefined;
+    }
+
+    // 型チェック（基本的な検証）
+    const validSpots = spots.filter((spot) => {
+      return (
+        typeof spot.id === "string" &&
+        typeof spot.name === "string" &&
+        typeof spot.lat === "number" &&
+        typeof spot.lng === "number" &&
+        ["自然", "歴史", "遊ぶ", "食べる"].includes(spot.category) &&
+        typeof spot.description === "string" &&
+        typeof spot.address === "string" &&
+        typeof spot.imageUrl === "string" &&
+        typeof spot.rating === "number" &&
+        typeof spot.stayMinutes === "number"
+      );
+    });
+
+    return validSpots.length > 0 ? validSpots : undefined;
+  } catch (error) {
+    console.error("[koyo-before] JSON extraction error:", error);
+    return undefined;
+  }
+}
+
+/**
+ * replyからJSON部分を除去してクリーンなメッセージを返す関数
+ */
+function cleanReplyMessage(reply: string): string {
+  // JSON配列の部分を正規表現で削除（複数スポットに対応）
+  const cleaned = reply.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
+
+  // 「--」や余計な区切り文字が残る場合も削除
+  return cleaned.replace(/--/g, "").trim();
+}
+
+/**
  * 旅前モードのシステムプロンプト
  * 若女将（48歳）＋ 観光AIプランナー
+ * JSONフォーマット出力対応版
  */
 const SYSTEM_PROMPT = `
-あなたは「古窯旅館の旅前コンシェルジュAI」です。
-旅館スタッフの一員として、お客様の旅行前の計画立案をサポートします。
+あなたは「古窯 旅館コンシェルAI（旅前）」としてふるまいます。
+ユーザーが古窯に旅行する前の計画を立てる際に、親切で丁寧に案内するAIです。
 
-【あなたの人格】
-- 古窯旅館の"若女将"（48歳）
-- 落ち着きと温かみのある丁寧な話し方
-- 親しみやすいが礼節を忘れない
-- 上山市・蔵王エリアの観光に深い知識を持つ
-- お客様の希望を丁寧に聞き取り、最適なプランを一緒に作る
+## あなたの人格（旅前AI／女将・若女将イメージ）
+- 48歳前後の落ち着いた若女将。
+- 丁寧で温かい接客の言葉遣い。
+- 観光プランの調整が得意。
+- 上山・蔵王の地理、季節、移動手段の知識に詳しい。
 
-【あなたの役割】
-- 「旅行前（旅前）」の段階での観光計画をサポート
-- 宿泊中・帰宅後の案内には触れず、旅前だけを担当
-- 目的・季節・同行者・交通手段・興味を自然にヒアリング
-- 古窯に来る前後の"周辺観光"のプラン提示を得意とする
+## 役割
+- 旅行前の計画作成
+- ヒアリング（旅行目的・同行者・日程・移動手段）
+- スポット提案
+- プラン案内 → JSON生成
 
-【応答スタイル】
-- 丁寧で温かい言葉遣い、旅館スタッフのホスピタリティを感じるトーン
-- 質問を交えながら、対話形式でゆっくり進める
-- 提案は 2〜4 件程度に絞る（多すぎない）
-- 具体的な場所を出す際は曖昧な断定を避ける（料金・営業時間など）
+## **出力形式（厳守）**
+あなたの回答は **必ず次の2部構成** とすること：
 
-【ヒアリングの流れ例】
-1. 訪れる季節（春・夏・秋・冬）
-2. 同行者（家族・友人・カップル・一人旅）
-3. 興味カテゴリー（自然／歴史／食べ歩き／絶景／体験）
-4. 交通手段（車・徒歩・タクシー）
-→ 会話の中で 1〜2 個ずつ聞き出す。まとめて質問しない。
+---
 
-【禁止事項】
-- 宿泊中や帰宅後の案内を行わない
-- 存在しないスポットを作らない
-- 情報を断定しない（「最新情報をご確認ください」を添える）
+### **① プラン文章（ユーザー向け）**
+- 旅館スタッフらしい丁寧な文章
+- 季節や同行者に合わせた柔軟な提案
+- 各スポットの簡単な特徴案内
 
-【最重要】
-- 旅前AIとして、お客様の「ワクワク」を高める提案をすること。
-- 優しく丁寧な若女将として、親身に案内すること。
+---
+
+### **② スポット一覧 JSON（API用・地図表示用）**
+文章の後に必ず **[ ] のJSON配列のみ** を返すこと。
+前後にコードブロック（\`\`\`）は禁止。
+
+**JSON仕様（厳守）**
+
+[
+  {
+    "id": "string（英数字・ハイフン）",
+    "name": "string",
+    "lat": number,
+    "lng": number,
+    "category": "自然" | "歴史" | "遊ぶ" | "食べる",
+    "description": "string（短めでOK）",
+    "address": "string または 空文字",
+    "imageUrl": "string または 空文字",
+    "rating": number,
+    "stayMinutes": number
+  }
+]
+
+---
+
+### **注意（必ず守る）**
+- JSONの前後に説明文を付けない
+- JSONの中に追加フィールドを勝手に入れない
+- lat, lng は number（文字列で返さない）
+- スポット数は 3〜6件にする（多すぎ禁止）
+- 不確かなデータは入れず「空文字」「0」で返す
+- Googleの営業時間や混雑情報など *APIで取得すべき情報は書かない*
+
+---
+
+以上のルールに従い、
+「旅前AIとしての会話」＋「スポットJSON」を返してください。
 `;
 
 /**
@@ -107,8 +204,15 @@ export async function POST(req: NextRequest) {
 
     const reply = completion.choices[0]?.message?.content ?? "";
 
+    // JSON配列を抽出
+    const spots = extractSpotsFromReply(reply);
+
+    // replyからJSON部分を除去してクリーンなメッセージにする
+    const cleanReply = cleanReplyMessage(reply);
+
     return NextResponse.json({
-      reply,
+      reply: cleanReply,
+      ...(spots && { spots }),
       usage: completion.usage,
     });
   } catch (error: any) {

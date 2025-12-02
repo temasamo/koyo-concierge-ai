@@ -24,3 +24,17 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ローディング点滅アニメーション */
+@keyframes dot-blink {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-dot-blink {
+  animation: dot-blink 1.4s ease-in-out infinite;
+}

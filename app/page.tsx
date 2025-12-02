@@ -105,7 +105,7 @@ export default function Page() {
       <BackgroundWrapper mode={mode} />
 
       <div className="relative z-10 flex flex-col items-center pt-8 pb-24 px-4">
-        <ChatContainer mode={mode} setMode={setMode} messages={messages} />
+        <ChatContainer mode={mode} setMode={setMode} messages={messages} isLoading={isLoading} />
 
         <div className="fixed left-0 right-0 bottom-0 pb-4 flex justify-center">
           <div className="w-full max-w-[480px] px-4">
