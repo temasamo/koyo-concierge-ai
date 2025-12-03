@@ -85,6 +85,12 @@ export default function MapWithSpots() {
       const bounds = L.latLngBounds([]);
 
       spots.forEach((spot, index) => {
+        // lat/lngがnullの場合はスキップ
+        if (spot.lat == null || spot.lng == null) {
+          console.warn(`[MapWithSpots] Skipping spot "${spot.name}" - missing coordinates`);
+          return;
+        }
+
         console.log(`[MapWithSpots] Adding marker ${index + 1}:`, spot.name, "at", spot.lat, spot.lng);
         
         try {
@@ -106,10 +112,13 @@ export default function MapWithSpots() {
       });
 
       // すべてのマーカーが表示されるように地図を調整
-      if (spots.length > 1) {
+      if (markersRef.current.length > 1) {
         mapRef.current.fitBounds(bounds, { padding: [50, 50] });
-      } else {
-        mapRef.current.setView([spots[0].lat, spots[0].lng], 13);
+      } else if (markersRef.current.length === 1) {
+        const firstSpot = spots.find(s => s.lat != null && s.lng != null);
+        if (firstSpot && firstSpot.lat != null && firstSpot.lng != null) {
+          mapRef.current.setView([firstSpot.lat, firstSpot.lng], 13);
+        }
       }
       
       console.log("[MapWithSpots] Markers added:", markersRef.current.length);
