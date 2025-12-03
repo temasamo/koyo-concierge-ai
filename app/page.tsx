@@ -89,11 +89,122 @@ export default function Page() {
       console.log("[page.tsx] API response:", data);
       console.log("[page.tsx] spots:", data.spots);
 
-      // スポットをマップ用に保存
+      // ============================================================
+      // スポット配列の受け取り処理
+      // ============================================================
+      // 【将来的な実装】
+      // AI側（/api/koyo/${mode}）が /api/spots/search を呼び出して
+      // スポット配列を取得し、その配列を data.spots として返す。
+      // この場合、data.spots は既にSupabase形式の配列なので、
+      // そのまま useSpotStore.setSpots() に渡す。
+      // ============================================================
+      
+      // AIからスポット配列を受け取る（Supabase形式を前提）
       if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
-        console.log("[page.tsx] Setting spots:", data.spots);
-        setSpots(data.spots);
+        // スポット配列の形式を確認
+        const firstSpot = data.spots[0];
+        const hasSupabaseFormat = (
+          firstSpot.id &&
+          (firstSpot.lat !== undefined && firstSpot.lng !== undefined) &&
+          (firstSpot.city !== undefined || firstSpot.drive_minutes !== undefined)
+        );
+
+        if (hasSupabaseFormat) {
+          // 【将来的な実装】AI側が既にSupabase形式の配列を返している場合
+          console.log("[page.tsx] Received Supabase format spots:", data.spots.length);
+          setSpots(data.spots);
+        } else {
+          // ============================================================
+          // 【暫定実装】スポット名マッチングロジック
+          // ============================================================
+          // TODO: 将来的に廃止予定
+          // 
+          // 【現段階での用途】
+          // 1. 既存のチャット返答（テキストのみ）でも、一応マップを動かすための暫定手段
+          // 2. どのスポット名がマッチしやすい／しにくいかを把握するためのログ出力
+          // ============================================================
+          
+          console.log("[page.tsx] [暫定] Converting AI spots to Supabase format via name matching...");
+          console.log("[page.tsx] [暫定] AI returned spots:", data.spots.map((s: any) => s.name));
+        console.log("[page.tsx] [暫定] Converting AI spots to Supabase format via name matching...");
+        console.log("[page.tsx] [暫定] AI returned spots:", data.spots.map((s: any) => s.name));
+        
+        // 【暫定】/api/spots/searchを呼び出してSupabase形式のデータを取得（全件取得して名前でマッチング）
+        try {
+          const searchRes = await fetch("/api/spots/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode,
+              maxSpots: 50, // 全件取得するため大きな値を設定
+            }),
+          });
+
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const supabaseSpots = searchData.spots || [];
+            console.log("[page.tsx] [暫定] Supabase spots count:", supabaseSpots.length);
+            
+            // 【暫定】AIが返したスポット名と一致するSupabaseスポットを抽出（部分一致も考慮）
+            const aiSpotNames = data.spots.map((s: any) => s.name.trim());
+            const matchedSpots: any[] = [];
+            const usedSpotIds = new Set<string>(); // 重複防止
+            
+            console.log("[page.tsx] [暫定] AI spot names:", aiSpotNames);
+            console.log("[page.tsx] [暫定] Supabase spot names:", supabaseSpots.map((s: any) => s.name));
+            
+            aiSpotNames.forEach((aiName: string) => {
+              // 完全一致を優先
+              let matched = supabaseSpots.find((spot: any) => 
+                !usedSpotIds.has(spot.id) && spot.name.trim() === aiName
+              );
+              
+              // 完全一致がない場合は部分一致を試す（より柔軟に）
+              if (!matched) {
+                // キーワード抽出（「上山城」「蔵王温泉」「蔵王刈田峠」など）
+                const keywords = aiName.replace(/[の・]/g, "").split(/(?=[城温泉峠市町])/);
+                
+                matched = supabaseSpots.find((spot: any) => {
+                  if (usedSpotIds.has(spot.id)) return false;
+                  
+                  const spotName = spot.name.replace(/[の・]/g, "");
+                  
+                  // キーワードが含まれているかチェック
+                  return keywords.some(keyword => 
+                    keyword.length >= 2 && spotName.includes(keyword)
+                  ) || spotName.includes(aiName.replace(/[の・]/g, "")) || 
+                     aiName.replace(/[の・]/g, "").includes(spotName);
+                });
+              }
+              
+              if (matched) {
+                matchedSpots.push(matched);
+                usedSpotIds.add(matched.id);
+                console.log(`[page.tsx] [暫定] ✓ Matched: "${aiName}" -> "${matched.name}" (lat=${matched.lat}, lng=${matched.lng})`);
+              } else {
+                console.warn(`[page.tsx] [暫定] ✗ No match found for: "${aiName}"`);
+              }
+            });
+
+            if (matchedSpots.length > 0) {
+              console.log(`[page.tsx] [暫定] Using matched Supabase spots: ${matchedSpots.length}/${aiSpotNames.length} matched`);
+              setSpots(matchedSpots);
+            } else {
+              console.warn("[page.tsx] [暫定] No matching Supabase spots found, clearing spots");
+              clearSpots();
+            }
+          } else {
+            console.warn("[page.tsx] [暫定] Failed to fetch Supabase spots, clearing spots");
+            clearSpots();
+          }
+        } catch (searchError) {
+          console.error("[page.tsx] [暫定] Error fetching Supabase spots:", searchError);
+          // エラー時はスポットをクリア（古い座標を使わない）
+          clearSpots();
+        }
+        }
       } else {
+        // スポット配列が空または存在しない場合
         console.log("[page.tsx] No spots found, clearing");
         clearSpots();
       }

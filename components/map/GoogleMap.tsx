@@ -121,7 +121,7 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
       return;
     }
 
-    // 既存のマーカーと情報ウィンドウを削除
+    // 既存のマーカーと情報ウィンドウを完全に削除（毎回クリア→再生成方式）
     markersRef.current.forEach((marker) => {
       marker.setMap(null);
     });
@@ -131,33 +131,47 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
     markersRef.current = [];
     infoWindowsRef.current = [];
 
-    // 新しいマーカーを追加
+    // 新しいマーカーを追加（Supabaseデータのみを使用）
     if (markers.length > 0) {
       // LatLngBoundsを取得（google.mapsから）
-      // importLibrary("maps")で読み込まれた後、google.mapsが利用可能
       const google = (window as any).google;
       if (!google || !google.maps) {
-        console.error("Google Maps API is not loaded");
+        console.error("[GoogleMap] Google Maps API is not loaded");
         return;
       }
       const bounds = new google.maps.LatLngBounds();
+      const newMarkers: any[] = [];
+      let skippedCount = 0;
 
-      markers.forEach((spot) => {
+      markers.forEach((spot, index) => {
+        // Supabaseのlat/lngのみを使用（必須チェック）
+        if (spot.lat == null || spot.lng == null) {
+          console.warn(`[GoogleMap] Skipping spot "${spot.name}" (index ${index}) - missing coordinates`);
+          skippedCount++;
+          return;
+        }
+
+        // マーカーを作成（Supabaseの座標のみ使用）
         const marker = new Marker({
           position: { lat: spot.lat, lng: spot.lng },
           map,
           title: spot.name,
         });
 
-        // 情報ウィンドウを追加
+        // InfoWindowの内容をSupabaseデータのみで構築
+        const infoContent = `
+          <div style="padding: 8px; min-width: 200px;">
+            <h3 style="font-weight: bold; font-size: 14px; margin-bottom: 4px;">${spot.name || "スポット名不明"}</h3>
+            ${spot.category ? `<p style="font-size: 12px; color: #2563eb; margin-bottom: 4px;">カテゴリ: ${spot.category}</p>` : ""}
+            ${spot.city ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">場所: ${spot.city}</p>` : ""}
+            ${spot.drive_minutes != null ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">${spot.drive_time}</p>` : ""}
+            ${spot.stay_time ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">滞在時間: ${spot.stay_time}</p>` : ""}
+            ${spot.season ? `<p style="font-size: 11px; color: #666;">シーズン: ${spot.season}</p>` : ""}
+          </div>
+        `;
+
         const infoWindow = new InfoWindow({
-          content: `
-            <div style="padding: 8px; min-width: 200px;">
-              <h3 style="font-weight: bold; font-size: 14px; margin-bottom: 4px;">${spot.name}</h3>
-              ${spot.description ? `<p style="font-size: 12px; color: #666; margin-bottom: 4px;">${spot.description}</p>` : ""}
-              ${spot.category ? `<span style="font-size: 11px; color: #2563eb;">${spot.category}</span>` : ""}
-            </div>
-          `,
+          content: infoContent,
         });
 
         marker.addListener("click", () => {
@@ -166,20 +180,47 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
           infoWindow.open(map, marker);
         });
 
-        markersRef.current.push(marker);
+        newMarkers.push(marker);
         infoWindowsRef.current.push(infoWindow);
-        bounds.extend({ lat: spot.lat, lng: spot.lng });
+      });
+
+      // マーカー参照を更新
+      markersRef.current = newMarkers;
+
+      // デバッグログ：表示されたマーカー数を確認
+      console.log(`[GoogleMap] Created ${newMarkers.length} markers (${skippedCount} skipped due to missing coordinates)`);
+      
+      if (newMarkers.length === 0) {
+        console.error("[GoogleMap] No valid markers created! All spots had missing coordinates.");
+        // マーカーがない場合は中心を設定
+        map.setCenter(center);
+        map.setZoom(12);
+        return;
+      }
+
+      // bounds計算をマーカーのgetPosition()で行う（現行のマーカーのみ）
+      newMarkers.forEach((marker) => {
+        const position = marker.getPosition();
+        if (position) {
+          bounds.extend(position);
+        }
       });
 
       // すべてのマーカーが表示されるように地図を調整
-      if (markers.length > 1) {
+      if (newMarkers.length > 1) {
         map.fitBounds(bounds, { top: 50, right: 50, bottom: 50, left: 50 });
-      } else {
-        map.setCenter({ lat: markers[0].lat, lng: markers[0].lng });
-        map.setZoom(13);
+        console.log(`[GoogleMap] Adjusted map bounds to fit ${newMarkers.length} markers`);
+      } else if (newMarkers.length === 1) {
+        const position = newMarkers[0].getPosition();
+        if (position) {
+          map.setCenter(position);
+          map.setZoom(13);
+          console.log(`[GoogleMap] Centered map on single marker: ${markers[0].name}`);
+        }
       }
     } else {
       // マーカーがない場合は中心を設定
+      console.log("[GoogleMap] No markers to display, centering on default location");
       map.setCenter(center);
       map.setZoom(12);
     }
