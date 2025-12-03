@@ -186,12 +186,21 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
   }, [markers, isLoading, googleMapsLibs, center]); // すべての依存関係を明示
 
   return (
-    <div className="w-full h-full relative">
+    <div className="w-full h-full relative" style={{ minHeight: '400px' }}>
       {/* mapRefは常にレンダリングされるようにする */}
-      <div ref={mapRef} className="w-full h-full" />
+      <div 
+        ref={mapRef} 
+        className="w-full h-full" 
+        style={{ minHeight: '400px' }}
+      />
       {isLoading && (
         <div className="absolute inset-0 bg-gray-100 flex items-center justify-center z-10">
           <div className="text-gray-600">地図を読み込み中...</div>
+        </div>
+      )}
+      {!isLoading && markers.length === 0 && (
+        <div className="absolute inset-0 bg-gray-50 flex items-center justify-center z-10 pointer-events-none">
+          <div className="text-gray-500 text-sm">スポットがありません</div>
         </div>
       )}
     </div>
