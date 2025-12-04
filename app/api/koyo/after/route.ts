@@ -73,166 +73,270 @@ async function getSpotListForPrompt(): Promise<string> {
 
 /**
  * 帰宅後モードのシステムプロンプトを生成（Supabaseスポット一覧を自動注入）
- * 若女将（48歳）
+ * After System Prompt (ver.2)
  */
 async function getSystemPrompt(): Promise<string> {
   const spotListText = await getSpotListForPrompt();
 
   return `
-あなたは「古窯 旅コンシェルジュAI（旅後）」です。  
-ご滞在を終え、これから帰宅されるお客様に向けて、  
-丁寧で温かい接客を行うAIコンシェルジュとしてふるまってください。
+あなたは「日本の宿 古窯」の専属AIコンシェルジュです。
+モード：After（帰宅後AI）
+人格：48歳前後の落ち着いた若女将。丁寧で温かい接客の言葉遣い。
+役割：チェックアウト後のお見送り、帰宅途中に寄れるスポット案内、負担の少ない提案、安全配慮。
 
-## あなたの人格（帰宅後AI／若女将イメージ）
-- 48歳前後の落ち着いた若女将。
-- 丁寧で親しみやすい旅館スタッフのトーン。
-- 「お見送りの気持ち」を大切に、温かく自然な話し方。
-- 安全な帰路への配慮を必ず添える。
+【AIの基本方針】
+- ユーザーはチェックアウト後であり「帰宅途中」という前提で対応する。
+- 旅行の余韻を大切にしつつ、落ち着いた丁寧なトーンで話す。
+- 道中の安全への配慮を必ず添える（例：天気や道路状況への気遣い）。
+- "負担のない"提案を最優先にする（移動時間・距離・体力消費を軽減）。
+- 山形県内のみ案内対象。ただし「帰宅方向にある場所」は優先して良い。
+- Supabaseのスポット以外は絶対に出さない（推測生成は厳禁）。
 
-【あなたの役割】
-- チェックアウト後のお見送り対応
-- 帰宅の経路に合わせた「立ち寄りスポット」提案
-- 上山温泉・山形周辺のお土産スポットの案内
-- 道中の安全情報（天候・道路）への配慮
-- 帰り道に合った「無理のない」提案
-- 帰宅後の余韻を楽しめる情報提供
+【Afterモードの提案の特徴】
+- 旅前（Before）: 計画作成・長時間移動も許容
+- 旅中（Stay）  : 当日の天候・気分に合わせた柔軟案
+- 旅後（After）: "帰り道寄れる・負担のない短時間スポット"が中心
 
-※旅前・旅中とは異なり、旅後は「帰宅途中に寄れる場所」「負担のないスポット」を優先して案内してください。
+【地理ルール】
+- 原則：古窯（上山市）からユーザーの帰宅方向にあるスポットのみを優先。
+- 県内であればどこでも案内可能だが、
+  帰宅途中の「負担の少ないルート上のスポット」を最重要とする。
+- 高速IC近く・主要道から外れない場所は優先的に選ぶ。
 
---------------------------------------------------
-【絶対ルール：スポット提案の制約】
-- 返答に含めてよいスポットは **以下のSupabaseスポット一覧のみ** です。
-- 一覧にないスポットは、名前が似ていても **一切使用不可**。
-- スポット名は Supabase 登録名を正確に使用してください。
-- AIの想像でスポットを作ってはいけません。
+【季節ルール】
+- 冬（12〜3月）は安全配慮の文言を必ず追加する。
+  例：「冬季は凍結が多く、特に夕方以降は路面が滑りやすくなりますので、お気をつけてお進みくださいませ。」
 
-【観光スポット一覧（Supabaseから自動取得）】
+【ヒアリング（重要）】
+ユーザーから情報が不足している場合、丁寧に短く確認する。
+例：
+- 「本日はどちら方面へお帰りになりますか？」
+- 「途中でお食事をとりたいご予定はございますか？」
+- 「立ち寄りたいジャンル（カフェ・景色・温泉など）はございますか？」
+
+必要なヒアリングを行った後にプランを生成する。
+
+【利用できるスポット（Supabase データのみ）】
+以下は Supabase から取得した「公式スポット一覧」です。
+この一覧にあるスポット名のみ、プランに使用できます。
+一覧にないスポットは、名前が似ていても **絶対に使用禁止**。
+
 ${spotListText}
 
 --------------------------------------------------
-【行動範囲の制約（最重要）】
-案内するスポットは、必ず  
-「上山市」「山形市」「蔵王温泉」「天童市」「山辺町」など  
-古窯（上山温泉）から *車で30〜60分圏内* に限定してください。
+【返信形式（統一仕様）】
+必ず以下のJSON形式で返す：
 
-山形県外（東京・仙台・北海道など）のスポットは  
-文章にも JSON にも絶対に含めないでください。
+{
+  "reply": "ユーザーへの丁寧な文章",
+  "plan": [
+    {
+      "title": "1つ目の提案タイトル",
+      "spots": [
+        { "name": "スポット名", "id": "SupabaseのID" },
+        ...
+      ]
+    }
+  ]
+}
 
---------------------------------------------------
-【重要：スポット提案が必要な場合の出力形式】
-あなたの回答は **必ず次の2部構成** とすること：
+※ plan は1件のみでOK（Afterは複数案は不要）。
+※ spots の id は Supabase の ID と一致させること。
+※ id 不明の場合は name のみで返す（フロント側でマッチング）。
+※ JSON 前後に \`\`\` や余計な文章は禁止。
 
-### **① プラン文章（ユーザー向け）**
-- 旅館スタッフらしい丁寧な文章
-- 帰宅途中の寄り道スポットの案内
-- 季節や帰路に合わせた柔軟な提案
+【提案内容のルール】
+- スポット数は 1〜3 件。
+- 距離の短さ・移動負担の軽さを最優先。
+- カフェ・景観・軽い観光・買い物・温泉・お土産が中心。
+- 長距離移動が必要なプランは不可。
+- 絶対に Supabase に存在しないスポットを提案しない。
 
-### **② スポット一覧 JSON（API用・地図表示用）**
-文章の後に必ず **[ ] のJSON配列のみ** を返すこと。
-前後にコードブロック（\`\`\`）は禁止。
-
-**JSON仕様（厳守）**
-[
-  {
-    "id": "string（Supabaseのidをそのまま使用）",
-    "name": "string（Supabaseのnameをそのまま使用）",
-    "lat": number（Supabaseのlatをそのまま使用）,
-    "lng": number（Supabaseのlngをそのまま使用）,
-    "category": "自然" | "歴史" | "遊ぶ" | "食べる",
-    "description": "string（短めでOK）",
-    "address": "string または 空文字",
-    "imageUrl": "string または 空文字",
-    "rating": number,
-    "stayMinutes": number
-  }
-]
-
-【注意】
-- 文章 → JSON配列 の順で必ず出力
-- JSONは実在する「山形エリア」限定
-- JSON配列は必ず [ {...}, {...} ] の形式
-- JSON内には説明以外の文章を書かない
-- category は必ず4種類のいずれかを使う
-- lat, lng は Supabase の値をそのまま使用（推測や近似値は禁止）
-- 上記のSupabaseスポット一覧にないスポットは絶対に含めない
-
---------------------------------------------------
 【禁止事項】
-- 山形県外のスポットを出す（東京・京都など絶対NG）
-- 実在しないスポットの生成
-- Supabaseスポット一覧にないスポットの使用
-- JSON中で文章を書く
-- 嘘の営業時間や価格を断定すること
-- 無理な移動距離を提案すること
+- 山形県外スポット
+- Supabaseに存在しないスポット
+- 推測で作った施設名
+- 長距離で負担の大きい提案（庄内、米沢など）※Afterでは原則不可
+
+【返答トーン】
+- 丁寧・温かい・落ち着いた若女将
+- 帰宅の安全を第一に気遣う
+- 「今日も素敵な一日となりますように」といった余韻のあるメッセージ
 
 --------------------------------------------------
-【口調】
-- 丁寧で親しみやすい旅館スタッフのトーン
-- 「お見送りの気持ち」を大切に、温かく自然な話し方
-- 安全な帰路への配慮を必ず添える
-
---------------------------------------------------
-ご滞在の最後まで、お客様に寄り添った温かいサポートを提供してください。
+以上のルールに従い、
+「帰宅後AIとしての丁寧な案内」＋「帰宅途中のプランJSON」を返してください。
+JSON形式で返さない場合は、プラン提案ができません。
 `;
 }
 
 /**
- * AIの応答からJSON配列を抽出する関数（後方互換性のため保持）
- * 正規表現で [...] の部分を抽出し、パースして返す
+ * AIの応答からplan配列を抽出する関数
+ * 新しい形式: { plan: [{ title: "", spots: [{ name: "", id: "" }], description: "" }] }
  */
-async function extractSpotsFromReply(reply: string): Promise<any[] | undefined> {
+async function extractPlanFromReply(reply: string): Promise<any[] | undefined> {
   try {
-    let extractedSpots: any[] | undefined;
+    let planArray: any[] | undefined;
 
-    // まず、JSON形式のレスポンスを試す（{ reply: "...", spots: [...] }形式）
+    // コードブロック（```json や ```）を除去
+    let cleanedReply = reply;
+    // ```json ... ``` を除去
+    cleanedReply = cleanedReply.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+    // ``` ... ``` を除去
+    cleanedReply = cleanedReply.replace(/```[\s\S]*?```/g, '');
+    
+    // まず、JSON形式のレスポンスを試す（全体がJSONの場合）
     try {
-      const jsonResponse = JSON.parse(reply);
-      if (jsonResponse.spots && Array.isArray(jsonResponse.spots)) {
-        extractedSpots = jsonResponse.spots;
+      const jsonResponse = JSON.parse(cleanedReply);
+      if (jsonResponse.plan && Array.isArray(jsonResponse.plan)) {
+        planArray = jsonResponse.plan;
+        console.log("[koyo-after] Found plan in full JSON response");
       }
     } catch {
       // JSON形式でない場合は、テキストから抽出を試す
     }
 
     // JSON形式で取得できなかった場合、テキストから抽出
-    if (!extractedSpots) {
-      const jsonMatch = reply.match(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g);
-      if (jsonMatch) {
-        const jsonString = jsonMatch[0];
-        const spots = JSON.parse(jsonString);
-        if (Array.isArray(spots)) {
-          extractedSpots = spots;
+    if (!planArray) {
+      // テキスト内に埋め込まれたJSONを抽出する
+      // 方法1: { "plan": [...] } を含むJSONオブジェクト全体を探す
+      // ネストされたJSONに対応するため、{ と } のバランスを考慮
+      let jsonStart = cleanedReply.indexOf('{"plan"');
+      if (jsonStart === -1) {
+        jsonStart = cleanedReply.indexOf("{\"plan\"");
+      }
+      if (jsonStart === -1) {
+        jsonStart = cleanedReply.indexOf("{ 'plan'");
+      }
+      
+      if (jsonStart !== -1) {
+        // { から始まるJSONオブジェクトの終わりを見つける
+        let braceCount = 0;
+        let jsonEnd = jsonStart;
+        for (let i = jsonStart; i < cleanedReply.length; i++) {
+          if (cleanedReply[i] === '{') braceCount++;
+          if (cleanedReply[i] === '}') {
+            braceCount--;
+            if (braceCount === 0) {
+              jsonEnd = i + 1;
+              break;
+            }
+          }
         }
+        
+        if (jsonEnd > jsonStart) {
+          try {
+            const jsonString = cleanedReply.substring(jsonStart, jsonEnd);
+            const planObj = JSON.parse(jsonString);
+            if (planObj.plan && Array.isArray(planObj.plan)) {
+              planArray = planObj.plan;
+              console.log("[koyo-after] Found plan in extracted JSON object");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-after] Failed to parse extracted JSON:", parseError);
+          }
+        }
+      }
+      
+      // 方法2: 正規表現で { "plan": [...] } 形式を探す（フォールバック）
+      if (!planArray) {
+        // より柔軟な正規表現：plan配列を含むJSONオブジェクト全体を抽出
+        const planMatch = cleanedReply.match(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/);
+        if (planMatch) {
+          try {
+            const planObj = JSON.parse(planMatch[0]);
+            if (planObj.plan && Array.isArray(planObj.plan)) {
+              planArray = planObj.plan;
+              console.log("[koyo-after] Found plan in regex match");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-after] Failed to parse regex matched JSON:", parseError);
+          }
+        }
+      }
+      
+      // 方法3: 最も外側の { } を探す（最後の試み）
+      if (!planArray) {
+        const outerMatch = cleanedReply.match(/\{[\s\S]*"plan"[\s\S]*\}/);
+        if (outerMatch) {
+          try {
+            const planObj = JSON.parse(outerMatch[0]);
+            if (planObj.plan && Array.isArray(planObj.plan)) {
+              planArray = planObj.plan;
+              console.log("[koyo-after] Found plan in outer match");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-after] Failed to parse outer match JSON:", parseError);
+          }
+        }
+      }
+      
+      if (!planArray) {
+        console.warn("[koyo-after] No plan JSON pattern found in reply");
+        console.warn("[koyo-after] Reply preview:", cleanedReply.substring(0, 500));
       }
     }
 
-    if (!extractedSpots || extractedSpots.length === 0) {
+    if (!planArray || planArray.length === 0) {
       return undefined;
     }
 
-    // AIが返したスポットをSupabase形式に変換
-    // idまたはnameを使ってSupabaseから完全なデータを取得
+    // plan[0].spotsが空または存在しない場合はundefinedを返す
+    const firstPlan = planArray[0];
+    if (!firstPlan || !firstPlan.spots || !Array.isArray(firstPlan.spots) || firstPlan.spots.length === 0) {
+      return undefined;
+    }
+
+    return planArray;
+  } catch (error) {
+    console.error("[koyo-after] Plan extraction error:", error);
+    return undefined;
+  }
+}
+
+/**
+ * plan[0].spotsからスポットを抽出し、Supabaseとマッチングする関数
+ * IDを最優先で使用し、一致しない場合はnameでマッチング
+ */
+async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined> {
+  try {
+    if (!planArray || planArray.length === 0) {
+      return undefined;
+    }
+
+    const firstPlan = planArray[0];
+    if (!firstPlan || !firstPlan.spots || !Array.isArray(firstPlan.spots) || firstPlan.spots.length === 0) {
+      return undefined;
+    }
+
+    const aiSpots = firstPlan.spots;
+
+    // Supabaseから全スポットを取得
     const supabase = getSupabaseClient();
     const { data: supabaseSpots } = await supabase
       .from("spot_master")
       .select("*");
 
     if (!supabaseSpots || supabaseSpots.length === 0) {
-      console.warn("[koyo-after] No Supabase spots found, returning AI spots as-is");
-      return extractedSpots;
+      console.warn("[koyo-after] No Supabase spots found");
+      return undefined;
     }
 
-    // AIが返したスポット名をSupabaseスポットとマッチング（正規化＋部分一致）
+    // AIが返したスポットをSupabase形式に変換
     const matchedSpots: any[] = [];
     const usedSpotIds = new Set<string>();
 
-    for (const aiSpot of extractedSpots) {
-      // idでマッチングを試す（優先）
-      let matched = supabaseSpots.find(
-        (s) => !usedSpotIds.has(s.id) && s.id === aiSpot.id
-      );
+    for (const aiSpot of aiSpots) {
+      let matched: any = null;
 
-      // idでマッチしない場合は、nameで正規化マッチング
+      // 1. IDでマッチングを試す（最優先）
+      if (aiSpot.id) {
+        matched = supabaseSpots.find(
+          (s) => !usedSpotIds.has(s.id) && s.id === aiSpot.id
+        );
+      }
+
+      // 2. IDでマッチしない場合は、nameで正規化マッチング
       if (!matched && aiSpot.name) {
         matched = matchSpot(aiSpot.name, supabaseSpots, usedSpotIds);
       }
@@ -257,7 +361,7 @@ async function extractSpotsFromReply(reply: string): Promise<any[] | undefined> 
             : null,
         });
         usedSpotIds.add(matched.id);
-        console.log(`[koyo-after] Matched spot: "${aiSpot.name}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
+        console.log(`[koyo-after] Matched spot: "${aiSpot.name || aiSpot.id}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
       } else {
         console.warn(`[MATCH WARNING] No match found for: "${aiSpot.name || aiSpot.id}"`);
       }
@@ -265,18 +369,24 @@ async function extractSpotsFromReply(reply: string): Promise<any[] | undefined> 
 
     return matchedSpots.length > 0 ? matchedSpots : undefined;
   } catch (error) {
-    console.error("[koyo-after] JSON extraction error:", error);
+    console.error("[koyo-after] Spot matching error:", error);
     return undefined;
   }
 }
 
 /**
  * replyからJSON部分を除去してクリーンなメッセージを返す関数
+ * 新しい形式: { plan: [...] } に対応
  */
 function cleanReplyMessage(reply: string): string {
+  // コードブロック（```json や ```）を除去
+  let cleanedReply = reply;
+  cleanedReply = cleanedReply.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+  cleanedReply = cleanedReply.replace(/```[\s\S]*?```/g, '');
+  
   // まず、JSON形式のレスポンスを試す
   try {
-    const jsonResponse = JSON.parse(reply);
+    const jsonResponse = JSON.parse(cleanedReply);
     if (jsonResponse.reply && typeof jsonResponse.reply === "string") {
       return jsonResponse.reply;
     }
@@ -284,11 +394,20 @@ function cleanReplyMessage(reply: string): string {
     // JSON形式でない場合は、テキストから抽出を試す
   }
 
-  // JSON配列の部分を正規表現で削除（複数スポットに対応）
-  const cleaned = reply.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
+  // { "plan": [...] } 形式のJSONを削除
+  const cleaned = cleanedReply.replace(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/g, "").trim();
+  
+  // { "reply": "...", "plan": [...] } 形式のJSONからreply部分を抽出
+  const replyMatch = cleaned.match(/\{\s*"reply"\s*:\s*"([^"]*)"\s*[,}]/);
+  if (replyMatch && replyMatch[1]) {
+    return replyMatch[1];
+  }
+
+  // 従来の配列形式も削除（後方互換性のため）
+  const cleaned2 = cleaned.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
 
   // 「--」や余計な区切り文字が残る場合も削除
-  return cleaned.replace(/--/g, "").trim();
+  return cleaned2.replace(/--/g, "").trim();
 }
 
 /**
@@ -341,18 +460,91 @@ export async function POST(req: NextRequest) {
 
     const reply = completion.choices[0]?.message?.content ?? "";
 
-    // JSON配列を抽出（JSON形式とテキスト形式の両方に対応）
-    // AIが返したスポットをSupabase形式に変換
-    const spots = await extractSpotsFromReply(reply);
+    // デバッグ: AIの応答をログ出力
+    console.log("[koyo-after] AI reply (first 500 chars):", reply.substring(0, 500));
+
+    // plan配列を抽出
+    let planArray = await extractPlanFromReply(reply);
+    console.log("[koyo-after] Extracted plan array:", planArray ? `Found ${planArray.length} plans` : "No plan found");
+
+    // plan配列が取得できない場合、古い形式（配列形式）を試す
+    if (!planArray) {
+      console.log("[koyo-after] Trying to extract old format (array)...");
+      try {
+        // より安全な正規表現で配列を探す
+        const jsonMatch = reply.match(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/);
+        if (jsonMatch) {
+          try {
+            const jsonString = jsonMatch[0];
+            const spots = JSON.parse(jsonString);
+            if (Array.isArray(spots) && spots.length > 0) {
+              // 古い形式を新しい形式に変換
+              planArray = [{
+                title: "帰宅途中のおすすめ",
+                spots: spots,
+                description: ""
+              }];
+              console.log("[koyo-after] Converted old format to new format");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-after] Failed to parse old format array:", parseError);
+            // JSONパースに失敗した場合、スポット名だけを抽出してマッチングを試す
+            // この場合は後続の処理でnameマッチングが行われる
+          }
+        }
+      } catch (error) {
+        console.warn("[koyo-after] Failed to extract old format:", error);
+      }
+    }
+
+    // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
+    let matchedSpots: any[] | undefined;
+    let finalPlan: any[] | undefined;
+
+    if (planArray && planArray.length > 0) {
+      matchedSpots = await extractAndMatchSpots(planArray);
+
+      // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
+      if (matchedSpots && matchedSpots.length > 0) {
+        finalPlan = planArray.map((plan, index) => {
+          if (index === 0) {
+            // plan[0]のspotsをマッチング済みスポットに置き換え
+            return {
+              ...plan,
+              spots: matchedSpots!.map((spot) => ({
+                name: spot.name,
+                id: spot.id,
+              })),
+            };
+          }
+          return plan;
+        });
+      } else {
+        // スポットが0件の場合はplanを返さない
+        finalPlan = undefined;
+      }
+    }
 
     // replyからJSON部分を除去してクリーンなメッセージにする
     const cleanReply = cleanReplyMessage(reply);
 
-    return NextResponse.json({
+    // レスポンスを構築
+    const response: any = {
       reply: cleanReply,
-      ...(spots && { spots }),
       usage: completion.usage,
-    });
+    };
+
+    // planがある場合のみ追加
+    if (finalPlan && finalPlan.length > 0) {
+      response.plan = finalPlan;
+    }
+
+    // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
+    if (matchedSpots && matchedSpots.length > 0) {
+      response.spots = matchedSpots;
+    }
+
+    return NextResponse.json(response);
   } catch (error: any) {
     console.error("[koyo-after] error:", error);
     return NextResponse.json(

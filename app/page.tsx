@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
@@ -19,6 +19,7 @@ const INITIAL_MESSAGES: Record<KoyoMode, string> = {
 
 export default function Page() {
   const router = useRouter();
+  const pathname = usePathname();
   const { mode, setMode } = useKoyoMode();
   const [input, setInput] = useState("");
 
@@ -35,6 +36,8 @@ export default function Page() {
 
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   const prevModeRef = useRef<KoyoMode>(mode);
+  const prevPathnameRef = useRef<string | null>(null);
+  
   useEffect(() => {
     const currentMessages = useMessageStore.getState().getMessages(mode);
     if (currentMessages.length === 0) {
@@ -43,12 +46,24 @@ export default function Page() {
         content: INITIAL_MESSAGES[mode],
       });
     }
+    
+    // 地図ページから戻ってきた場合は、スポットを保持する
+    const isReturningFromMap = prevPathnameRef.current === "/map" && pathname === "/";
+    
     // モードが実際に変わった時のみスポットをクリア（地図ページから戻った時はクリアしない）
     if (prevModeRef.current !== mode) {
+      console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
       clearSpots();
       prevModeRef.current = mode;
+    } else if (isReturningFromMap) {
+      console.log(`[page.tsx] Returning from map page, keeping spots (count: ${spots.length})`);
+    } else {
+      console.log(`[page.tsx] Mode unchanged (${mode}), keeping spots (count: ${spots.length})`);
     }
-  }, [mode, clearSpots, resetToInitial]);
+    
+    // パス名を更新
+    prevPathnameRef.current = pathname;
+  }, [mode, pathname, clearSpots, resetToInitial, spots.length]);
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
