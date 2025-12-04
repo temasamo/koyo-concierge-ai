@@ -7,8 +7,8 @@ import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
 import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
 import { useSpotStore } from "@/store/spots";
-
-type Msg = { role: "user" | "assistant"; content: string };
+import { useMessageStore } from "@/store/messages";
+import type { Msg } from "@/store/messages";
 
 // モードごとの初期メッセージ
 const INITIAL_MESSAGES: Record<KoyoMode, string> = {
@@ -21,29 +21,30 @@ export default function Page() {
   const router = useRouter();
   const { mode, setMode } = useKoyoMode();
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Msg[]>([
-    {
-      role: "assistant",
-      content: INITIAL_MESSAGES.before,
-    },
-  ]);
+
+  // 会話履歴をZustandストアで管理（ページ遷移後も保持される）
+  const messages = useMessageStore((s) => s.getMessages(mode));
+  const setMessages = useMessageStore((s) => s.setMessages);
+  const addMessage = useMessageStore((s) => s.addMessage);
+  const resetToInitial = useMessageStore((s) => s.resetToInitial);
 
   // マップ用スポット状態管理
   const setSpots = useSpotStore((s) => s.setSpots);
   const clearSpots = useSpotStore((s) => s.clearSpots);
   const spots = useSpotStore((s) => s.spots);
 
-  // モードが変わったときに初期メッセージを更新し、spotsをクリア
+  // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   useEffect(() => {
-    setMessages([
-      {
+    const currentMessages = useMessageStore.getState().getMessages(mode);
+    if (currentMessages.length === 0) {
+      resetToInitial(mode, {
         role: "assistant",
         content: INITIAL_MESSAGES[mode],
-      },
-    ]);
+      });
+    }
     // モード切り替え時に前のモードのspotsをクリア
     clearSpots();
-  }, [mode, clearSpots]);
+  }, [mode, clearSpots, resetToInitial]);
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
@@ -55,15 +56,13 @@ export default function Page() {
     setIsLoading(true);
 
     try {
-      // ① まずユーザーのメッセージを追加（安全に最新状態で追加）
-      setMessages(prev => [
-        ...prev,
-        { role: "user", content: inputMessage }
-      ]);
+      // ① まずユーザーのメッセージを追加
+      addMessage(mode, { role: "user", content: inputMessage });
 
-      // ② 現在の messages を安全に取得（最新値を参照したいので getLatestMessages を作る）
+      // ② 現在の messages を安全に取得（最新値を参照）
+      const currentMessages = useMessageStore.getState().getMessages(mode);
       const latestMessages = [
-        ...messages,
+        ...currentMessages,
         { role: "user", content: inputMessage }
       ];
 
@@ -101,18 +100,22 @@ export default function Page() {
       
       // AIからスポット配列を受け取る（Supabase形式を前提）
       if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
-        // スポット配列の形式を確認
+        // ============================================================
+        // 形式の揺れチェック（Task 5: page.tsx側の修正）
+        // ============================================================
         const firstSpot = data.spots[0];
         const hasSupabaseFormat = (
-          firstSpot.id &&
+          Array.isArray(data.spots) &&
+          firstSpot?.id &&
           (firstSpot.lat !== undefined && firstSpot.lng !== undefined) &&
           (firstSpot.city !== undefined || firstSpot.drive_minutes !== undefined)
         );
 
         if (hasSupabaseFormat) {
-          // 【将来的な実装】AI側が既にSupabase形式の配列を返している場合
+          // Supabase 格納形式（既にOK）
           console.log("[page.tsx] Received Supabase format spots:", data.spots.length);
           setSpots(data.spots);
+          // returnを削除：スポット設定後もAIの返答を追加する必要がある
         } else {
           // ============================================================
           // 【暫定実装】スポット名マッチングロジック
@@ -124,12 +127,11 @@ export default function Page() {
           // 2. どのスポット名がマッチしやすい／しにくいかを把握するためのログ出力
           // ============================================================
           
+          // AI の独自 JSON → マッチングで Supabase に変換
           console.log("[page.tsx] [暫定] Converting AI spots to Supabase format via name matching...");
           console.log("[page.tsx] [暫定] AI returned spots:", data.spots.map((s: any) => s.name));
-        console.log("[page.tsx] [暫定] Converting AI spots to Supabase format via name matching...");
-        console.log("[page.tsx] [暫定] AI returned spots:", data.spots.map((s: any) => s.name));
         
-        // 【暫定】/api/spots/searchを呼び出してSupabase形式のデータを取得（全件取得して名前でマッチング）
+          // 【暫定】/api/spots/searchを呼び出してSupabase形式のデータを取得（全件取得して名前でマッチング）
         try {
           const searchRes = await fetch("/api/spots/search", {
             method: "POST",
@@ -210,21 +212,15 @@ export default function Page() {
       }
 
       // ④ AI の返答を追加
-      setMessages(prev => [
-        ...prev,
-        { role: "assistant", content: data.reply }
-      ]);
+      addMessage(mode, { role: "assistant", content: data.reply });
     } catch (error) {
       console.error("Chat API error:", error);
 
       // エラー時のメッセージ
-      setMessages(prev => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "申し訳ありません。ネットワークエラーが発生しました。しばらくしてから再度お試しください。"
-        }
-      ]);
+      addMessage(mode, {
+        role: "assistant",
+        content: "申し訳ありません。ネットワークエラーが発生しました。しばらくしてから再度お試しください。"
+      });
     } finally {
       // 送信中フラグ OFF
       setIsLoading(false);

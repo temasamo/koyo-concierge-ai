@@ -121,14 +121,16 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
       return;
     }
 
-    // 既存のマーカーと情報ウィンドウを完全に削除（毎回クリア→再生成方式）
-    markersRef.current.forEach((marker) => {
-      marker.setMap(null);
-    });
+    // --- Marker Reset ---
+    // Task 1: 新しいスポットがセットされたとき、古いマーカーを必ず全て削除
+    if (markersRef.current.length > 0) {
+      markersRef.current.forEach((m) => m.setMap(null));
+      markersRef.current = [];
+      console.log("[Map] 古いマーカーを全て削除しました");
+    }
     infoWindowsRef.current.forEach((infoWindow) => {
       infoWindow.close();
     });
-    markersRef.current = [];
     infoWindowsRef.current = [];
 
     // 新しいマーカーを追加（Supabaseデータのみを使用）
@@ -158,33 +160,52 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
           title: spot.name,
         });
 
-        // InfoWindowの内容をSupabaseデータのみで構築
-        const infoContent = `
-          <div style="padding: 8px; min-width: 200px;">
-            <h3 style="font-weight: bold; font-size: 14px; margin-bottom: 4px;">${spot.name || "スポット名不明"}</h3>
-            ${spot.category ? `<p style="font-size: 12px; color: #2563eb; margin-bottom: 4px;">カテゴリ: ${spot.category}</p>` : ""}
-            ${spot.city ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">場所: ${spot.city}</p>` : ""}
-            ${spot.drive_minutes != null ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">${spot.drive_time}</p>` : ""}
-            ${spot.stay_time ? `<p style="font-size: 11px; color: #666; margin-bottom: 2px;">滞在時間: ${spot.stay_time}</p>` : ""}
-            ${spot.season ? `<p style="font-size: 11px; color: #666;">シーズン: ${spot.season}</p>` : ""}
+        // Task 3: InfoWindowのスタイル安定化
+        // 画像URLを取得（photoUrlまたはimageUrlの両方に対応）
+        const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
+        
+        const html = `
+          <div style="
+            max-width: 220px;
+            padding: 8px;
+            font-family: sans-serif;
+          ">
+            <h3 style="margin:0 0 6px; font-size:14px; font-weight:bold;">
+              ${spot.name || "スポット名不明"}
+            </h3>
+
+            <img 
+              src="${imageUrl}"
+              style="width:100%; border-radius:6px; margin-bottom:6px;"
+              onerror="this.src='/noimage.png'"
+            />
+
+            ${spot.category ? `<p style="margin:0 0 4px; font-size:12px; color:#2563eb;">カテゴリ: ${spot.category}</p>` : ""}
+            ${spot.city ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">場所: ${spot.city}</p>` : ""}
+            ${spot.drive_minutes != null ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">${spot.drive_time}</p>` : ""}
+            ${spot.stay_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">滞在時間: ${spot.stay_time}</p>` : ""}
+            ${spot.season ? `<p style="margin:0; font-size:12px; color:#666;">シーズン: ${spot.season}</p>` : ""}
           </div>
         `;
 
         const infoWindow = new InfoWindow({
-          content: infoContent,
+          content: html,
         });
 
         marker.addListener("click", () => {
           // 他の情報ウィンドウを閉じる
           infoWindowsRef.current.forEach((iw) => iw.close());
-          infoWindow.open(map, marker);
+          infoWindow.open({
+            map: mapInstanceRef.current,
+            anchor: marker,
+          });
         });
 
         newMarkers.push(marker);
         infoWindowsRef.current.push(infoWindow);
       });
 
-      // マーカー参照を更新
+      // マーカー参照を更新（Task 1: 新しいマーカーを作る際は markersRef.current.push）
       markersRef.current = newMarkers;
 
       // デバッグログ：表示されたマーカー数を確認
@@ -198,25 +219,29 @@ export default function GoogleMap({ center, markers }: GoogleMapProps) {
         return;
       }
 
-      // bounds計算をマーカーのgetPosition()で行う（現行のマーカーのみ）
-      newMarkers.forEach((marker) => {
-        const position = marker.getPosition();
-        if (position) {
-          bounds.extend(position);
-        }
+      // Task 2: bounds.fit()が正しく効くように調整
+      // 座標のあるスポットのみ bounds.extend()
+      const validSpots = markers.filter((s) => s.lat && s.lng);
+      validSpots.forEach((s) => {
+        bounds.extend({ lat: s.lat!, lng: s.lng! });
       });
 
-      // すべてのマーカーが表示されるように地図を調整
-      if (newMarkers.length > 1) {
-        map.fitBounds(bounds, { top: 50, right: 50, bottom: 50, left: 50 });
-        console.log(`[GoogleMap] Adjusted map bounds to fit ${newMarkers.length} markers`);
-      } else if (newMarkers.length === 1) {
-        const position = newMarkers[0].getPosition();
-        if (position) {
-          map.setCenter(position);
-          map.setZoom(13);
-          console.log(`[GoogleMap] Centered map on single marker: ${markers[0].name}`);
-        }
+      // mapRef.current が存在してから実行
+      if (!mapInstanceRef.current) {
+        console.error("[GoogleMap] mapInstanceRef.current is null");
+        return;
+      }
+
+      // マーカー数で挙動を分岐
+      if (validSpots.length === 1) {
+        // 1スポット → zoom: 14 あたり（自然）
+        mapInstanceRef.current.setCenter(bounds.getCenter());
+        mapInstanceRef.current.setZoom(14);
+        console.log("[Map] 単スポットのためズーム固定で表示");
+      } else if (validSpots.length > 1) {
+        // 2スポット以上 → bounds.fit()
+        mapInstanceRef.current.fitBounds(bounds, 80);
+        console.log("[Map] 複数スポットのため bounds.fit で調整");
       }
     } else {
       // マーカーがない場合は中心を設定
