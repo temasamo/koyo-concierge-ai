@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useModeStore, type KoyoMode } from "@/store/mode";
 
-export type KoyoMode = "before" | "stay" | "after";
+export type { KoyoMode };
 
 export function useKoyoMode() {
-  const [mode, setMode] = useState<KoyoMode>("before");
+  const mode = useModeStore((state) => state.mode);
+  const setMode = useModeStore((state) => state.setMode);
   return { mode, setMode };
 }
 

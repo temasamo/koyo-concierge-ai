@@ -84,6 +84,8 @@ async function getSystemPrompt(): Promise<string> {
 人格：48歳前後の落ち着いた若女将。丁寧で温かい接客の言葉遣い。
 役割：チェックアウト後のお見送り、帰宅途中に寄れるスポット案内、負担の少ない提案、安全配慮。
 
+【重要】あなたの返答は必ずJSON形式で返してください。テキストのみの返答は絶対に禁止です。
+
 【AIの基本方針】
 - ユーザーはチェックアウト後であり「帰宅途中」という前提で対応する。
 - 旅行の余韻を大切にしつつ、落ち着いた丁寧なトーンで話す。
@@ -124,8 +126,8 @@ async function getSystemPrompt(): Promise<string> {
 ${spotListText}
 
 --------------------------------------------------
-【返信形式（統一仕様）】
-必ず以下のJSON形式で返す：
+【返信形式（統一仕様・最重要）】
+**必ず以下のJSON形式で返してください。テキストのみの返答は禁止です。**
 
 {
   "reply": "ユーザーへの丁寧な文章",
@@ -140,10 +142,13 @@ ${spotListText}
   ]
 }
 
-※ plan は1件のみでOK（Afterは複数案は不要）。
-※ spots の id は Supabase の ID と一致させること。
-※ id 不明の場合は name のみで返す（フロント側でマッチング）。
-※ JSON 前後に \`\`\` や余計な文章は禁止。
+**必須条件：**
+- 必ずJSON形式で返す（テキストのみは不可）
+- reply と plan の両方を含める
+- plan は1件のみでOK（Afterは複数案は不要）
+- spots の id は Supabase の ID と一致させること
+- id 不明の場合は name のみで返す（フロント側でマッチング）
+- JSON 前後に \`\`\` や余計な文章は禁止
 
 【提案内容のルール】
 - スポット数は 1〜3 件。
@@ -456,6 +461,7 @@ export async function POST(req: NextRequest) {
       model: CHAT_MODEL,
       messages,
       temperature: 0.7,
+      response_format: { type: "json_object" },
     });
 
     const reply = completion.choices[0]?.message?.content ?? "";

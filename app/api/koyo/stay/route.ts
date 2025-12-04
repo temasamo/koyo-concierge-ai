@@ -83,6 +83,8 @@ async function getSystemPrompt(): Promise<string> {
 ユーザーが古窯にご宿泊中（チェックイン前〜チェックアウトまで）に、
 今日の過ごし方・行動プランを最適化する役割のAIです。
 
+【重要】あなたの返答は必ずJSON形式で返してください。テキストのみの返答は絶対に禁止です。
+
 --------------------------------------------------
 【あなたの人格（旅中AI）】
 - 48歳前後の落ち着いた若女将。
@@ -144,22 +146,11 @@ Stay では、案内する範囲を「ユーザーの今日の空き時間」に
 ${spotListText}
 
 --------------------------------------------------
-【プラン出力仕様】
-あなたの回答は **必ず次の2部構成** にしてください。
+【プラン出力仕様（最重要）】
+**必ず以下のJSON形式で返してください。テキストのみの返答は禁止です。**
 
-### ① ユーザー向け文章
-- 若女将として温かく丁寧
-- 今日の状況を踏まえてわかりやすく案内
-- 雪道・天候が悪い時は無理のない提案
-- 移動時間・距離感も簡単に説明
-- 館内案内も適切に織り交ぜる
-
-### ② JSON（必須・厳守）
-**文章の後に、必ず以下のJSON形式で返してください。**
-JSONは文章の最後に配置し、前後に説明文やコードブロックは付けないでください。
-
-**出力形式（厳守）：**
 {
+  "reply": "若女将として温かく丁寧な文章（今日の状況を踏まえてわかりやすく案内）",
   "plan": [
     {
       "title": "○時間プラン / 今日のおすすめ",
@@ -174,9 +165,10 @@ JSONは文章の最後に配置し、前後に説明文やコードブロック�
   ]
 }
 
-【重要ルール】
-- **必ずJSON形式で返すこと**（テキストのみは不可）
-- JSONの前後に \`\`\` や余計な文章は禁止
+**必須条件：**
+- 必ずJSON形式で返す（テキストのみは不可）
+- reply と plan の両方を含める
+- JSONの前後に説明文やコードブロック（\`\`\`）は付けない
 - spots配列内の各スポットには **id と name のみ** を含める（lat/lngは不要）
 - Supabase にないスポットは含めない
 - スポット数は 3〜6 件程度
@@ -209,11 +201,20 @@ async function extractPlanFromReply(reply: string): Promise<any[] | undefined> {
   try {
     let planArray: any[] | undefined;
 
-    // まず、JSON形式のレスポンスを試す
+    // コードブロック（```json や ```）を除去
+    let cleanedReply = reply;
+    cleanedReply = cleanedReply.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+    cleanedReply = cleanedReply.replace(/```[\s\S]*?```/g, '');
+
+    // デバッグログ
+    console.log("[koyo-stay] AI reply (first 500 chars):", cleanedReply.substring(0, 500));
+
+    // まず、JSON形式のレスポンスを試す（全体がJSONの場合）
     try {
-      const jsonResponse = JSON.parse(reply);
+      const jsonResponse = JSON.parse(cleanedReply);
       if (jsonResponse.plan && Array.isArray(jsonResponse.plan)) {
         planArray = jsonResponse.plan;
+        console.log("[koyo-stay] Found plan in full JSON response");
       }
     } catch {
       // JSON形式でない場合は、テキストから抽出を試す
@@ -221,37 +222,89 @@ async function extractPlanFromReply(reply: string): Promise<any[] | undefined> {
 
     // JSON形式で取得できなかった場合、テキストから抽出
     if (!planArray) {
-      // { "plan": [...] } 形式を探す（より柔軟な正規表現）
-      // ネストされたJSONに対応するため、より複雑なパターンを使用
-      const planMatch = reply.match(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/);
-      if (planMatch) {
-        try {
-          const planObj = JSON.parse(planMatch[0]);
-          if (planObj.plan && Array.isArray(planObj.plan)) {
-            planArray = planObj.plan;
-          }
-        } catch {
-          // パース失敗 - より広範囲のマッチを試す
-          try {
-            // 最後の { から } までを探す（より広範囲）
-            const lastBraceMatch = reply.match(/\{[\s\S]*"plan"[\s\S]*\}/);
-            if (lastBraceMatch) {
-              const planObj = JSON.parse(lastBraceMatch[0]);
-              if (planObj.plan && Array.isArray(planObj.plan)) {
-                planArray = planObj.plan;
-              }
+      // テキスト内に埋め込まれたJSONを抽出する
+      // 方法1: { "plan": [...] } を含むJSONオブジェクト全体を探す
+      let jsonStart = cleanedReply.indexOf('{"plan"');
+      if (jsonStart === -1) {
+        jsonStart = cleanedReply.indexOf("{\"plan\"");
+      }
+      if (jsonStart === -1) {
+        jsonStart = cleanedReply.indexOf("{ 'plan'");
+      }
+      
+      if (jsonStart !== -1) {
+        // { から始まるJSONオブジェクトの終わりを見つける
+        let braceCount = 0;
+        let jsonEnd = jsonStart;
+        for (let i = jsonStart; i < cleanedReply.length; i++) {
+          if (cleanedReply[i] === '{') braceCount++;
+          if (cleanedReply[i] === '}') {
+            braceCount--;
+            if (braceCount === 0) {
+              jsonEnd = i + 1;
+              break;
             }
-          } catch {
-            // パース失敗
-            console.warn("[koyo-stay] Failed to parse plan JSON from text");
           }
         }
+        
+        if (jsonEnd > jsonStart) {
+          try {
+            const jsonString = cleanedReply.substring(jsonStart, jsonEnd);
+            const planObj = JSON.parse(jsonString);
+            if (planObj.plan && Array.isArray(planObj.plan)) {
+              planArray = planObj.plan;
+              console.log("[koyo-stay] Found plan in extracted JSON object");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-stay] Failed to parse extracted JSON:", parseError);
+          }
+        }
+      }
+      
+      // 方法2: 正規表現で { "plan": [...] } 形式を探す（フォールバック）
+      if (!planArray) {
+        const planMatch = cleanedReply.match(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/);
+        if (planMatch) {
+          try {
+            const planObj = JSON.parse(planMatch[0]);
+            if (planObj.plan && Array.isArray(planObj.plan)) {
+              planArray = planObj.plan;
+              console.log("[koyo-stay] Found plan in regex match");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-stay] Failed to parse regex matched JSON:", parseError);
+          }
+        }
+      }
+      
+      // 方法3: 最も外側の { } を探す（最後の試み）
+      if (!planArray) {
+        const outerMatch = cleanedReply.match(/\{[\s\S]*"plan"[\s\S]*\}/);
+        if (outerMatch) {
+          try {
+            const planObj = JSON.parse(outerMatch[0]);
+            if (planObj.plan && Array.isArray(planObj.plan)) {
+              planArray = planObj.plan;
+              console.log("[koyo-stay] Found plan in outer match");
+            }
+          } catch (parseError) {
+            console.warn("[koyo-stay] Failed to parse outer match JSON:", parseError);
+          }
+        }
+      }
+      
+      if (!planArray) {
+        console.warn("[koyo-stay] No plan JSON pattern found in reply");
+        console.warn("[koyo-stay] Reply preview:", cleanedReply.substring(0, 500));
       }
     }
 
     if (!planArray || planArray.length === 0) {
+      console.log("[koyo-stay] Extracted plan array: No plan found");
       return undefined;
     }
+    
+    console.log(`[koyo-stay] Extracted plan array: Found ${planArray.length} plans`);
 
     // plan[0].spotsが空または存在しない場合はundefinedを返す
     const firstPlan = planArray[0];
@@ -351,9 +404,14 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
  * 新しい形式: { plan: [...] } に対応
  */
 function cleanReplyMessage(reply: string): string {
+  // コードブロック（```json や ```）を除去
+  let cleanedReply = reply;
+  cleanedReply = cleanedReply.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+  cleanedReply = cleanedReply.replace(/```[\s\S]*?```/g, '');
+  
   // まず、JSON形式のレスポンスを試す
   try {
-    const jsonResponse = JSON.parse(reply);
+    const jsonResponse = JSON.parse(cleanedReply);
     if (jsonResponse.reply && typeof jsonResponse.reply === "string") {
       return jsonResponse.reply;
     }
@@ -362,7 +420,13 @@ function cleanReplyMessage(reply: string): string {
   }
 
   // { "plan": [...] } 形式のJSONを削除
-  const cleaned = reply.replace(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/g, "").trim();
+  const cleaned = cleanedReply.replace(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/g, "").trim();
+  
+  // { "reply": "...", "plan": [...] } 形式のJSONからreply部分を抽出
+  const replyMatch = cleaned.match(/\{\s*"reply"\s*:\s*"([^"]*)"\s*[,}]/);
+  if (replyMatch && replyMatch[1]) {
+    return replyMatch[1];
+  }
 
   // 従来の配列形式も削除（後方互換性のため）
   const cleaned2 = cleaned.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
@@ -417,6 +481,7 @@ export async function POST(req: NextRequest) {
       model: CHAT_MODEL,
       messages,
       temperature: 0.7,
+      response_format: { type: "json_object" },
     });
 
     const reply = completion.choices[0]?.message?.content ?? "";
