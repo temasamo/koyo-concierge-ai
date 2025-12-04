@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
@@ -34,6 +34,7 @@ export default function Page() {
   const spots = useSpotStore((s) => s.spots);
 
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
+  const prevModeRef = useRef<KoyoMode>(mode);
   useEffect(() => {
     const currentMessages = useMessageStore.getState().getMessages(mode);
     if (currentMessages.length === 0) {
@@ -42,8 +43,11 @@ export default function Page() {
         content: INITIAL_MESSAGES[mode],
       });
     }
-    // モード切り替え時に前のモードのspotsをクリア
-    clearSpots();
+    // モードが実際に変わった時のみスポットをクリア（地図ページから戻った時はクリアしない）
+    if (prevModeRef.current !== mode) {
+      clearSpots();
+      prevModeRef.current = mode;
+    }
   }, [mode, clearSpots, resetToInitial]);
 
   // --- 追加：送信中の状態を管理 ---
