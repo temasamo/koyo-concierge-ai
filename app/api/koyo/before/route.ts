@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
+import { matchSpot } from "../_utils/matchSpot";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -215,21 +216,19 @@ async function extractSpotsFromReply(reply: string): Promise<any[] | undefined> 
       return extractedSpots;
     }
 
-    // AIが返したスポットのidまたはnameでSupabaseスポットをマッチング
+    // AIが返したスポット名をSupabaseスポットとマッチング（正規化＋部分一致）
     const matchedSpots: any[] = [];
     const usedSpotIds = new Set<string>();
 
     for (const aiSpot of extractedSpots) {
-      // idでマッチングを試す
+      // idでマッチングを試す（優先）
       let matched = supabaseSpots.find(
         (s) => !usedSpotIds.has(s.id) && s.id === aiSpot.id
       );
 
-      // idでマッチしない場合はnameでマッチング
+      // idでマッチしない場合は、nameで正規化マッチング
       if (!matched && aiSpot.name) {
-        matched = supabaseSpots.find(
-          (s) => !usedSpotIds.has(s.id) && s.name.trim() === aiSpot.name.trim()
-        );
+        matched = matchSpot(aiSpot.name, supabaseSpots, usedSpotIds);
       }
 
       if (matched) {
@@ -252,9 +251,9 @@ async function extractSpotsFromReply(reply: string): Promise<any[] | undefined> 
             : null,
         });
         usedSpotIds.add(matched.id);
-        console.log(`[koyo-before] Matched spot: "${aiSpot.name}" -> Supabase ID: ${matched.id}`);
+        console.log(`[koyo-before] Matched spot: "${aiSpot.name}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
       } else {
-        console.warn(`[koyo-before] No Supabase match found for: "${aiSpot.name || aiSpot.id}"`);
+        console.warn(`[MATCH WARNING] No match found for: "${aiSpot.name || aiSpot.id}"`);
       }
     }
 
