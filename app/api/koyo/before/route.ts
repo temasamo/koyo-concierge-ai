@@ -132,7 +132,7 @@ ${spotListText}
 **必ず以下のJSON形式で返してください。テキストのみの返答は禁止です。**
 
 {
-  "reply": "若女将の丁寧な文章",
+  "reply": "若女将の丁寧な文章（必ず提案するスポット名を含めてください）",
   "plan": [
     {
       "title": "プランタイトル",
@@ -147,6 +147,10 @@ ${spotListText}
 **必須条件：**
 - 必ずJSON形式で返す（テキストのみは不可）
 - reply と plan の両方を含める
+- **【最重要】replyには必ず提案するスポット名を自然な文章で含めること**
+  - 例：「上山城」「上杉神社」「山寺（立石寺）」など、plan[0].spotsに含まれるすべてのスポット名をreplyに含めること
+  - スポット名を列挙するだけではなく、自然な文章に組み込むこと
+  - 例：「まずは上山城で山形の歴史を感じながら景色を楽しみ、その後、上杉神社へ向かい、上杉謙信にちなんだ歴史を学びます。最後に、山寺（立石寺）を訪れ、歴史ある寺院の美しい景観を堪能するプランです。」
 - スポットの id は Supabase の id をそのまま使用すること
 - スポット名は Supabase の登録名を正確に使用すること
 - JSON の前後に説明文やコードブロックは付けない
@@ -363,6 +367,7 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
 /**
  * replyからJSON部分を除去してクリーンなメッセージを返す関数
  * 新しい形式: { plan: [...] } に対応
+ * スポット名は保持する（reply部分に含まれている場合はそのまま返す）
  */
 function cleanReplyMessage(reply: string): string {
   // コードブロック（```json や ```）を除去
@@ -374,26 +379,33 @@ function cleanReplyMessage(reply: string): string {
   try {
     const jsonResponse = JSON.parse(cleanedReply);
     if (jsonResponse.reply && typeof jsonResponse.reply === "string") {
+      // reply部分をそのまま返す（スポット名が含まれている場合は保持される）
       return jsonResponse.reply;
     }
   } catch {
     // JSON形式でない場合は、テキストから抽出を試す
   }
 
-  // { "plan": [...] } 形式のJSONを削除
-  const cleaned = cleanedReply.replace(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/g, "").trim();
-  
   // { "reply": "...", "plan": [...] } 形式のJSONからreply部分を抽出
+  const fullJsonMatch = cleanedReply.match(/\{\s*"reply"\s*:\s*"([^"]*)"\s*,\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/);
+  if (fullJsonMatch && fullJsonMatch[1]) {
+    return fullJsonMatch[1];
+  }
+
+  // { "plan": [...] } 形式のJSONを削除（reply部分が別にある場合）
+  let cleaned = cleanedReply.replace(/\{\s*"plan"\s*:\s*\[[\s\S]*?\]\s*\}/g, "").trim();
+  
+  // { "reply": "..." } 形式からreply部分を抽出
   const replyMatch = cleaned.match(/\{\s*"reply"\s*:\s*"([^"]*)"\s*[,}]/);
   if (replyMatch && replyMatch[1]) {
     return replyMatch[1];
   }
 
   // 従来の配列形式も削除（後方互換性のため）
-  const cleaned2 = cleaned.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
+  cleaned = cleaned.replace(/\[\s*\{[\s\S]*?\}\s*(,\s*\{[\s\S]*?\}\s*)*\]/g, "").trim();
 
   // 「--」や余計な区切り文字が残る場合も削除
-  return cleaned2.replace(/--/g, "").trim();
+  return cleaned.replace(/--/g, "").trim();
 }
 
 /**
@@ -480,6 +492,14 @@ export async function POST(req: NextRequest) {
 
     // replyからJSON部分を除去してクリーンなメッセージにする
     const cleanReply = cleanReplyMessage(reply);
+    
+    // デバッグログ
+    console.log("[koyo-before] Cleaned reply:", cleanReply);
+    console.log("[koyo-before] Cleaned reply contains spot names:", 
+      matchedSpots && matchedSpots.length > 0 
+        ? matchedSpots.some(spot => cleanReply.includes(spot.name))
+        : false
+    );
 
     // レスポンスを構築
     const response: any = {

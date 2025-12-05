@@ -49,6 +49,8 @@ export async function loadGoogleMaps() {
     const { InfoWindow } = await importLibrary("maps");
     console.log("[MapLoader] InfoWindow imported");
     
+    // DirectionsServiceとDirectionsRendererはgoogle.mapsから直接取得
+    // （Legacy Directions APIを使用）
     return { Map, Marker, InfoWindow };
   } catch (error) {
     console.error("[MapLoader] Error importing libraries:", error);

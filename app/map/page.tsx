@@ -9,7 +9,7 @@ export default function MapPage() {
   const spots = useSpotStore((state) => state.spots);
 
   // 古窯（上山温泉）の公式座標
-  const center = { lat: 38.1530, lng: 140.2794 };
+  const center = { lat: 38.14828716772903, lng: 140.261163693796 };
 
   // デバッグ用
   console.log("[MapPage] Spots:", spots);
@@ -34,7 +34,13 @@ export default function MapPage() {
 
       {/* マップ */}
       <div className="flex-1 relative min-h-0">
-        <GoogleMap center={center} markers={spots} />
+        <GoogleMap 
+          center={center} 
+          markers={spots} 
+          spots={spots}
+          showRoute={true}
+          koyoOrigin={center}
+        />
       </div>
     </div>
   );
