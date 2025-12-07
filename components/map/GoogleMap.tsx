@@ -76,11 +76,11 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
         if (google && google.maps && google.maps.DirectionsService && google.maps.DirectionsRenderer) {
           directionsServiceRef.current = new google.maps.DirectionsService();
           directionsRendererRef.current = new google.maps.DirectionsRenderer({
-            suppressMarkers: false, // マーカーも表示
+            suppressMarkers: true, // 純正マーカーとInfoWindowを無効化（既存のマーカー描画ロジックを使用）
             preserveViewport: true, // ビューポートを保持
           });
           directionsRendererRef.current.setMap(map);
-          console.log("[GoogleMap] Directions API initialized");
+          console.log("[GoogleMap] Directions API initialized (suppressMarkers: true)");
         } else {
           console.warn("[GoogleMap] Directions API not available - make sure Directions API is enabled in Google Cloud Console");
         }
