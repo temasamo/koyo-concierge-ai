@@ -3,6 +3,44 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { loadGoogleMaps } from "./MapLoader";
 import type { Spot } from "@/store/spots";
 
+function buildKoyoInfoWindowContent() {
+  return `
+    <div style="
+      padding: 14px;
+      border-radius: 12px;
+      font-family: 'Noto Sans JP', sans-serif;
+      color: #333;
+      background: #fff;
+      width: 260px;
+    ">
+      <img
+        src="/origin/koyo-main.jpg"
+        style="width: 100%; border-radius: 10px; margin-bottom: 10px;"
+      />
+
+      <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">
+        ◆ 古窯（Koyo）
+      </div>
+
+      <div style="font-size: 13px; margin-bottom: 10px; color: #666;">
+        上山温泉の老舗旅館<br>旅のスタート地点です。
+      </div>
+
+      <div style="border-top: 1px solid #eee; margin: 8px 0;"></div>
+
+      <div style="font-size: 13px; line-height: 1.7;">
+        ・チェックイン：15時<br>
+        ・チェックアウト：10時<br>
+        ・住所：山形県上山市葉山5-45
+      </div>
+
+      <div style="margin-top: 10px; font-size: 12px; color: #999;">
+        本日も素敵な旅をお楽しみください。
+      </div>
+    </div>
+  `;
+}
+
 interface GoogleMapProps {
   center: { lat: number; lng: number };
   markers: Spot[];
@@ -297,19 +335,7 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       });
 
       // 古窯のInfoWindow（固定データ）
-      const koyoHtml = `
-        <div style="
-          max-width: 220px;
-          padding: 8px;
-          font-family: sans-serif;
-        ">
-          <h3 style="margin:0 0 6px; font-size:14px; font-weight:bold;">
-            古窯
-          </h3>
-          <p style="margin:0 0 4px; font-size:12px; color:#666;">上山温泉の旅館</p>
-          <p style="margin:0 0 4px; font-size:12px; color:#666;">出発地点</p>
-        </div>
-      `;
+      const koyoHtml = buildKoyoInfoWindowContent();
 
       const koyoInfoWindow = new InfoWindow({
         content: koyoHtml,
