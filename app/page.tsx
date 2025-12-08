@@ -6,7 +6,7 @@ import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
 import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
-import { useSpotStore } from "@/store/spots";
+import { useSpotStore, type OriginInfo } from "@/store/spots";
 import { useMessageStore } from "@/store/messages";
 import type { Msg } from "@/store/messages";
 
@@ -117,6 +117,45 @@ export default function Page() {
         console.log("[page.tsx] Set origin:", data.origin);
       } else {
         clearOrigin();
+      }
+
+      // 現在地取得が必要な場合の処理（Pre-Checkin: F/現在地）
+      if (data.requiresLocation) {
+        if (typeof window === "undefined" || !("geolocation" in navigator)) {
+          addMessage(mode, {
+            role: "assistant",
+            content: "現在地を取得できませんでした。A〜Eから別の出発地を選択してください。",
+          });
+        } else {
+          addMessage(mode, {
+            role: "assistant",
+            content: "現在地を取得します。位置情報の利用を許可してください。",
+          });
+
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const { latitude, longitude } = pos.coords;
+              setOrigin({
+                type: "current",
+                lat: latitude,
+                lng: longitude,
+              } as OriginInfo);
+              console.log("[page.tsx] Set current location origin:", latitude, longitude);
+
+              // 位置取得後に再問い合わせ
+              setTimeout(() => {
+                onSend("現在地を取得しました。プランを続けてください。");
+              }, 0);
+            },
+            (err) => {
+              console.error("[page.tsx] Geolocation error:", err);
+              addMessage(mode, {
+                role: "assistant",
+                content: "現在地の取得に失敗しました。A〜Eから別の出発地を選択してください。",
+              });
+            }
+          );
+        }
       }
 
       // ============================================================

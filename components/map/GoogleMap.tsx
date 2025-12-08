@@ -204,8 +204,19 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
     let routeWaypoints: any[] = [];
     const isPreCheckinPrefBoundary = origin && origin.type === "pref-boundary" && origin.pref;
     const isPreCheckinFixed = origin && origin.type === "fixed" && origin.lat && origin.lng;
+    const isCurrentLocation = origin && origin.type === "current" && origin.lat && origin.lng;
     
-    if (isPreCheckinPrefBoundary && origin.pref) {
+    if (isCurrentLocation && origin.lat && origin.lng) {
+      // 現在地 → AI spots → 古窯
+      routeOrigin = { lat: origin.lat, lng: origin.lng };
+      routeDestination = koyoOrigin || center;
+      routeWaypoints = validSpots.map((s) => ({
+        location: { lat: s.lat, lng: s.lng },
+        stopover: true,
+      }));
+      console.log("[GoogleMap] Current location mode: Using current origin:", routeOrigin);
+      console.log("[GoogleMap] Current location mode: Destination is Koyo:", routeDestination);
+    } else if (isPreCheckinPrefBoundary && origin.pref) {
       // Pre-Checkinモード（県境）: 県境 → AI spots → 古窯
       routeOrigin = getPrefBoundary(origin.pref);
       routeDestination = koyoOrigin || center; // 古窯を目的地に

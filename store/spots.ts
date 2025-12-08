@@ -25,10 +25,12 @@ export type Spot = {
   stayMinutes?: number;
 };
 
-type OriginInfo = {
+export type OriginInfo = {
   type: "pref-boundary" | "fixed" | "current";
   pref?: "miyagi" | "fukushima" | "akita" | "niigata";
   name?: string;
+  lat?: number;
+  lng?: number;
 };
 
 type SpotStore = {
