@@ -4,6 +4,9 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
+import { detectPreCheckinIntent } from "@/lib/koyo/intents";
+import { parseOriginSelection, type Origin } from "@/lib/koyo/precheckin/origins";
+import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckinPlan";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -401,22 +404,32 @@ function cleanReplyMessage(reply: string): string {
  * リクエストボディの型
  * - messages: chat履歴（フロントが管理）
  * - query: 単発問い合わせ
+ * - userState: ユーザーの状態（originなど）
  */
 type BeforeRequestBody =
-  | { messages: ChatCompletionMessageParam[] }
-  | { query: string };
+  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: Origin } }
+  | { query: string; userState?: { origin?: Origin } };
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as BeforeRequestBody;
 
     let userMessages: ChatCompletionMessageParam[];
+    let userMessage: string;
 
     if ("messages" in body && Array.isArray(body.messages)) {
       // フロントの履歴を採用
       userMessages = body.messages;
+      // 最後のユーザーメッセージを取得
+      const lastUserMessage = userMessages
+        .filter((m) => m.role === "user")
+        .pop();
+      userMessage = typeof lastUserMessage?.content === "string" 
+        ? lastUserMessage.content 
+        : "";
     } else if ("query" in body && typeof body.query === "string") {
       // 単発問い合わせモード（MVP向け）
+      userMessage = body.query;
       userMessages = [
         {
           role: "user",
@@ -429,6 +442,85 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    const userState = body.userState || {};
+
+    // 1. Pre-Checkin Intent 判定
+    const isPreCheckin = detectPreCheckinIntent(userMessage);
+
+    if (isPreCheckin) {
+      // origin 未設定 → 質問フェーズへ
+      if (!userState.origin) {
+        return NextResponse.json({
+          mode: "precheckin-origin-select",
+          reply: `
+チェックイン前の観光プランをお作りしますね！
+まず、出発地を教えてください。
+
+A. 山形駅
+B. 山形空港
+C. かみのやま温泉駅
+D. 山形蔵王IC（高速）
+E. かみのやま温泉IC（高速）
+F. 現在地を使う
+G. その他（自由入力）
+
+例：「A」「空港」「現在地で」など簡単でOKです！
+`.trim()
+        });
+      }
+
+      // origin がある → PreCheckin プラン生成モードへ
+      try {
+        const plan = await generatePrecheckinPlan({
+          origin: userState.origin,
+          userMessage: userMessage,
+        });
+
+        return NextResponse.json(plan);
+      } catch (error: any) {
+        console.error("[koyo-before] Pre-Checkin plan generation error:", error);
+        return NextResponse.json(
+          {
+            error: "Pre-Checkinプランの生成中にエラーが発生しました。",
+            detail: error?.message ?? String(error),
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    // 2. Origin選択回答の処理（Pre-Checkinモードでorigin未設定の場合の回答）
+    const parsedOrigin = parseOriginSelection(userMessage);
+    if (parsedOrigin && "useCurrentLocation" in parsedOrigin) {
+      // 現在地指定の場合は、フロントエンドで処理する必要がある
+      return NextResponse.json({
+        mode: "precheckin-origin-select",
+        reply: "現在地を使用する場合は、ブラウザの位置情報を許可してください。位置情報が取得できない場合は、A〜Eから選択してください。",
+        requiresLocation: true,
+      });
+    } else if (parsedOrigin && "name" in parsedOrigin) {
+      // originが選択された場合、Pre-Checkinプランを生成
+      try {
+        const plan = await generatePrecheckinPlan({
+          origin: parsedOrigin,
+          userMessage: userMessage,
+        });
+
+        return NextResponse.json(plan);
+      } catch (error: any) {
+        console.error("[koyo-before] Pre-Checkin plan generation error:", error);
+        return NextResponse.json(
+          {
+            error: "Pre-Checkinプランの生成中にエラーが発生しました。",
+            detail: error?.message ?? String(error),
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    // --- Pre-Checkin ではない（既存 Before の処理へ） ---
 
     // Supabaseからスポット一覧を取得してシステムプロンプトを生成
     const systemPrompt = await getSystemPrompt();
