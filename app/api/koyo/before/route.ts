@@ -7,6 +7,8 @@ import { matchSpot } from "../_utils/matchSpot";
 import { detectPreCheckinIntent } from "@/lib/koyo/intents";
 import { parseOriginSelection, type Origin } from "@/lib/koyo/precheckin/origins";
 import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckinPlan";
+import { resolveOriginFromFreeInput, getOriginFromPrefecture } from "./_utils/originResolver";
+import type { PrefectureKey } from "./_constants/prefEntryPoints";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -492,6 +494,7 @@ G. その他（自由入力）
 
     // 2. Origin選択回答の処理（Pre-Checkinモードでorigin未設定の場合の回答）
     const parsedOrigin = parseOriginSelection(userMessage);
+    
     if (parsedOrigin && "useCurrentLocation" in parsedOrigin) {
       // 現在地指定の場合は、フロントエンドで処理する必要がある
       return NextResponse.json({
@@ -500,7 +503,7 @@ G. その他（自由入力）
         requiresLocation: true,
       });
     } else if (parsedOrigin && "name" in parsedOrigin) {
-      // originが選択された場合、Pre-Checkinプランを生成
+      // originが選択された場合（A〜E）、Pre-Checkinプランを生成
       try {
         const plan = await generatePrecheckinPlan({
           origin: parsedOrigin,
@@ -517,6 +520,44 @@ G. その他（自由入力）
           },
           { status: 500 }
         );
+      }
+    } else {
+      // 3. 自由入力（G）の場合：県名を推定して県境座標を決定
+      const resolution = resolveOriginFromFreeInput(userMessage);
+      
+      if (resolution.type === "resolved") {
+        // 県名が特定できた場合、Pre-Checkinプランを生成
+        try {
+          const plan = await generatePrecheckinPlan({
+            origin: resolution.origin,
+            userMessage: userMessage,
+          });
+
+          return NextResponse.json(plan);
+        } catch (error: any) {
+          console.error("[koyo-before] Pre-Checkin plan generation error:", error);
+          return NextResponse.json(
+            {
+              error: "Pre-Checkinプランの生成中にエラーが発生しました。",
+              detail: error?.message ?? String(error),
+            },
+            { status: 500 }
+          );
+        }
+      } else if (resolution.type === "ambiguous") {
+        // 曖昧な入力の場合、質問を返す
+        return NextResponse.json({
+          mode: "precheckin-origin-select",
+          reply: resolution.message,
+          ambiguous: true,
+          candidates: resolution.candidates,
+        });
+      } else {
+        // 認識できない場合、質問を返す
+        return NextResponse.json({
+          mode: "precheckin-origin-select",
+          reply: resolution.message,
+        });
       }
     }
 
