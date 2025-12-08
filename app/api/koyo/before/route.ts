@@ -531,62 +531,34 @@ G. その他（自由入力）
     }
 
     // 2. Origin選択回答の処理（Pre-Checkinモードでorigin未設定の場合の回答）
-    const parsedOrigin = parseOriginSelection(userMessage);
-    
-    if (parsedOrigin && "useCurrentLocation" in parsedOrigin) {
-      // 現在地指定の場合は、フロントエンドで処理する必要がある
-      return NextResponse.json({
+    // 注意: この処理は Pre-Checkin intent が検出された場合のみ実行する
+    // （通常の Before モードでは実行しない）
+    if (isPreCheckin && !userState.origin) {
+      const parsedOrigin = parseOriginSelection(userMessage);
+      
+      if (parsedOrigin && "useCurrentLocation" in parsedOrigin) {
+        // 現在地指定の場合は、フロントエンドで処理する必要がある
+        return NextResponse.json({
         mode: "precheckin-origin-select",
         reply: "現在地を使用する場合は、ブラウザの位置情報を許可してください。位置情報が取得できない場合は、A〜Eから選択してください。",
         requiresLocation: true,
       });
-    } else if (parsedOrigin && "name" in parsedOrigin) {
-      // originが選択された場合（A〜E）、Pre-Checkinプランを生成
-      try {
-        const plan = await generatePrecheckinPlan({
-          origin: parsedOrigin,
-          userMessage: userMessage,
-        });
-
-        // A〜Eを選択した場合、レスポンスにorigin情報を追加（fixedタイプ）
-        return NextResponse.json({
-          ...plan,
-          origin: {
-            type: "fixed",
-            name: parsedOrigin.name,
-            lat: parsedOrigin.lat,
-            lng: parsedOrigin.lng,
-          },
-        });
-      } catch (error: any) {
-        console.error("[koyo-before] Pre-Checkin plan generation error:", error);
-        return NextResponse.json(
-          {
-            error: "Pre-Checkinプランの生成中にエラーが発生しました。",
-            detail: error?.message ?? String(error),
-          },
-          { status: 500 }
-        );
-      }
-    } else {
-      // 3. 自由入力（G）の場合：県名を推定して県境座標を決定
-      const resolution = resolveOriginFromFreeInput(userMessage);
-      
-      if (resolution.type === "resolved") {
-        // 県名が特定できた場合、Pre-Checkinプランを生成
+      } else if (parsedOrigin && "name" in parsedOrigin) {
+        // originが選択された場合（A〜E）、Pre-Checkinプランを生成
         try {
           const plan = await generatePrecheckinPlan({
-            origin: resolution.origin,
+            origin: parsedOrigin,
             userMessage: userMessage,
-            prefecture: resolution.prefecture, // 県名を追加
           });
 
-          // レスポンスにorigin情報を追加（指示形式に合わせる）
+          // A〜Eを選択した場合、レスポンスにorigin情報を追加（fixedタイプ）
           return NextResponse.json({
             ...plan,
             origin: {
-              type: "pref-boundary",
-              pref: resolution.prefecture,
+              type: "fixed",
+              name: parsedOrigin.name,
+              lat: parsedOrigin.lat,
+              lng: parsedOrigin.lng,
             },
           });
         } catch (error: any) {
@@ -599,23 +571,55 @@ G. その他（自由入力）
             { status: 500 }
           );
         }
-      } else if (resolution.type === "ambiguous") {
-        // 曖昧な入力の場合、質問を返す（指示形式に合わせる）
-        return NextResponse.json({
-          type: "ask-pref",
-          mode: "precheckin-origin-select",
-          reply: resolution.message,
-          message: resolution.message,
-          choices: resolution.candidates,
-        });
       } else {
-        // 認識できない場合、質問を返す
-        return NextResponse.json({
-          type: "ask-pref",
-          mode: "precheckin-origin-select",
-          reply: resolution.message,
-          message: resolution.message,
-        });
+        // 3. 自由入力（G）の場合：県名を推定して県境座標を決定
+        const resolution = resolveOriginFromFreeInput(userMessage);
+        
+        if (resolution.type === "resolved") {
+          // 県名が特定できた場合、Pre-Checkinプランを生成
+          try {
+            const plan = await generatePrecheckinPlan({
+              origin: resolution.origin,
+              userMessage: userMessage,
+              prefecture: resolution.prefecture, // 県名を追加
+            });
+
+            // レスポンスにorigin情報を追加（指示形式に合わせる）
+            return NextResponse.json({
+              ...plan,
+              origin: {
+                type: "pref-boundary",
+                pref: resolution.prefecture,
+              },
+            });
+          } catch (error: any) {
+            console.error("[koyo-before] Pre-Checkin plan generation error:", error);
+            return NextResponse.json(
+              {
+                error: "Pre-Checkinプランの生成中にエラーが発生しました。",
+                detail: error?.message ?? String(error),
+              },
+              { status: 500 }
+            );
+          }
+        } else if (resolution.type === "ambiguous") {
+          // 曖昧な入力の場合、質問を返す（指示形式に合わせる）
+          return NextResponse.json({
+            type: "ask-pref",
+            mode: "precheckin-origin-select",
+            reply: resolution.message,
+            message: resolution.message,
+            choices: resolution.candidates,
+          });
+        } else {
+          // 認識できない場合、質問を返す
+          return NextResponse.json({
+            type: "ask-pref",
+            mode: "precheckin-origin-select",
+            reply: resolution.message,
+            message: resolution.message,
+          });
+        }
       }
     }
 
