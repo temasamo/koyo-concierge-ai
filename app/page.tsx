@@ -97,6 +97,9 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: latestMessages,
+          userState: {
+            origin,
+          },
         }),
       });
 
