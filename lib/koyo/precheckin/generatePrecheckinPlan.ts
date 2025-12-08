@@ -6,6 +6,7 @@
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import type { Origin } from "./origins";
+import type { PrefectureKey } from "@/app/api/koyo/before/_constants/prefEntryPoints";
 import { matchSpot } from "@/app/api/koyo/_utils/matchSpot";
 
 // OpenAIクライアントを取得する関数
@@ -238,9 +239,11 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
 export async function generatePrecheckinPlan({
   origin,
   userMessage,
+  prefecture,
 }: {
   origin: Origin;
   userMessage: string;
+  prefecture?: PrefectureKey;
 }): Promise<{
   reply: string;
   plan: any[];

@@ -115,6 +115,34 @@ ${spotListText}
 - スポット名は必ず Supabase の登録名を正確に使用すること
 
 --------------------------------------------------
+【重要：出発地が"自由入力（G）"の場合のロジック】
+--------------------------------------------------
+
+1. API（originResolver）が出発地の県を推定します。
+
+2. 以下の状況で「経由県を質問」してください：
+   ・県推定が曖昧な場合
+   ・複数県候補が出た場合
+   ・「関東から」「東北から」など広域の入力
+
+3. 質問文の形式：
+「古窯へ向かう場合、どの県を経由すると想定しますか？
+① 宮城　② 福島　③ 秋田　④ 新潟」
+
+4. ユーザーが答えた県を JSON で返す時は：
+{
+  "origin": {
+     "type": "pref-boundary",
+     "pref": "fukushima"
+  },
+  "reply": "...",
+  "plan": [...]
+}
+
+5. 県境座標の決定はフロントエンド（GoogleMap）が行うため、
+   AI は座標を返してはいけません。
+
+--------------------------------------------------
 【季節ルール】
 冬（12〜3月）は以下の注意文を含める：
 「雪道が多いため、お車の場合は通常より余裕を持ったご計画がおすすめです。」
@@ -125,6 +153,10 @@ ${spotListText}
 
 {
   "reply": "若女将の丁寧な文章（必ず提案するスポット名を含めてください）",
+  "origin": {
+    "type": "pref-boundary",
+    "pref": "miyagi" | "fukushima" | "akita" | "niigata"
+  },
   "plan": [
     {
       "title": "プランタイトル",
@@ -135,6 +167,12 @@ ${spotListText}
     }
   ]
 }
+
+**origin フィールドについて：**
+- Pre-Checkinモード（Before）で出発地が県境の場合のみ origin を含める
+- origin.type は "pref-boundary" を指定
+- origin.pref は "miyagi" | "fukushima" | "akita" | "niigata" のいずれか
+- 座標（lat/lng）は返さない（フロントエンドが決定）
 
 **必須条件：**
 - 必ずJSON形式で返す（テキストのみは不可）
@@ -510,7 +548,16 @@ G. その他（自由入力）
           userMessage: userMessage,
         });
 
-        return NextResponse.json(plan);
+        // A〜Eを選択した場合、レスポンスにorigin情報を追加（fixedタイプ）
+        return NextResponse.json({
+          ...plan,
+          origin: {
+            type: "fixed",
+            name: parsedOrigin.name,
+            lat: parsedOrigin.lat,
+            lng: parsedOrigin.lng,
+          },
+        });
       } catch (error: any) {
         console.error("[koyo-before] Pre-Checkin plan generation error:", error);
         return NextResponse.json(
@@ -531,9 +578,17 @@ G. その他（自由入力）
           const plan = await generatePrecheckinPlan({
             origin: resolution.origin,
             userMessage: userMessage,
+            prefecture: resolution.prefecture, // 県名を追加
           });
 
-          return NextResponse.json(plan);
+          // レスポンスにorigin情報を追加（指示形式に合わせる）
+          return NextResponse.json({
+            ...plan,
+            origin: {
+              type: "pref-boundary",
+              pref: resolution.prefecture,
+            },
+          });
         } catch (error: any) {
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
           return NextResponse.json(
@@ -545,18 +600,21 @@ G. その他（自由入力）
           );
         }
       } else if (resolution.type === "ambiguous") {
-        // 曖昧な入力の場合、質問を返す
+        // 曖昧な入力の場合、質問を返す（指示形式に合わせる）
         return NextResponse.json({
+          type: "ask-pref",
           mode: "precheckin-origin-select",
           reply: resolution.message,
-          ambiguous: true,
-          candidates: resolution.candidates,
+          message: resolution.message,
+          choices: resolution.candidates,
         });
       } else {
         // 認識できない場合、質問を返す
         return NextResponse.json({
+          type: "ask-pref",
           mode: "precheckin-origin-select",
           reply: resolution.message,
+          message: resolution.message,
         });
       }
     }

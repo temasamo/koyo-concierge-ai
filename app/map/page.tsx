@@ -7,6 +7,7 @@ import { useSpotStore } from "@/store/spots";
 export default function MapPage() {
   const router = useRouter();
   const spots = useSpotStore((state) => state.spots);
+  const origin = useSpotStore((state) => state.origin);
 
   // 古窯（上山温泉）の公式座標
   const center = { lat: 38.14828716772903, lng: 140.261163693796 };
@@ -14,6 +15,7 @@ export default function MapPage() {
   // デバッグ用
   console.log("[MapPage] Spots:", spots);
   console.log("[MapPage] Spots count:", spots.length);
+  console.log("[MapPage] Origin:", origin);
 
   return (
     <div className="w-full h-screen flex flex-col overflow-hidden">
@@ -40,6 +42,7 @@ export default function MapPage() {
           spots={spots}
           showRoute={true}
           koyoOrigin={center}
+          origin={origin}
         />
       </div>
     </div>

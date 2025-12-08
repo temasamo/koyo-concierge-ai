@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { loadGoogleMaps } from "./MapLoader";
 import type { Spot } from "@/store/spots";
+import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
 
 function buildKoyoInfoWindowContent() {
   return `
@@ -47,9 +48,16 @@ interface GoogleMapProps {
   spots?: Spot[]; // Directions API用（plan.spotsを渡す）
   showRoute?: boolean; // ルート表示の有効/無効（デフォルト: false）
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
+  origin?: {
+    type: "pref-boundary" | "fixed" | "current";
+    pref?: PrefectureKey;
+    name?: string;
+    lat?: number;
+    lng?: number;
+  }; // Pre-Checkinモード用のorigin情報
 }
 
-export default function GoogleMap({ center, markers, spots, showRoute = false, koyoOrigin }: GoogleMapProps) {
+export default function GoogleMap({ center, markers, spots, showRoute = false, koyoOrigin, origin }: GoogleMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -172,10 +180,6 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       console.warn("[GoogleMap] Directions API not initialized");
       return;
     }
-    if (!koyoOrigin) {
-      console.warn("[GoogleMap] Koyo origin not provided");
-      return;
-    }
 
     // null安全性チェック：有効な座標を持つスポットのみをフィルタリング
     const validSpots = routeSpots.filter(
@@ -194,23 +198,57 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       return;
     }
 
-    // originは常に古窯の座標に固定
-    const origin = koyoOrigin;
+    // originの決定（Pre-Checkinモード対応）
+    let routeOrigin: { lat: number; lng: number };
+    let routeDestination: { lat: number; lng: number };
+    let routeWaypoints: any[] = [];
+    const isPreCheckinPrefBoundary = origin && origin.type === "pref-boundary" && origin.pref;
+    const isPreCheckinFixed = origin && origin.type === "fixed" && origin.lat && origin.lng;
     
-    // destinationはAI spotsの最後のスポット
-    const destination = {
-      lat: validSpots[validSpots.length - 1].lat,
-      lng: validSpots[validSpots.length - 1].lng,
-    };
-
-    // waypointsはAI spotsの最初以外すべて（最後も含む）
-    const waypoints =
-      validSpots.length > 1
-        ? validSpots.slice(0, -1).map((s) => ({
-            location: { lat: s.lat, lng: s.lng },
-            stopover: true,
-          }))
-        : [];
+    if (isPreCheckinPrefBoundary && origin.pref) {
+      // Pre-Checkinモード（県境）: 県境 → AI spots → 古窯
+      routeOrigin = getPrefBoundary(origin.pref);
+      routeDestination = koyoOrigin || center; // 古窯を目的地に
+      routeWaypoints = validSpots.map((s) => ({
+        location: { lat: s.lat, lng: s.lng },
+        stopover: true,
+      }));
+      console.log("[GoogleMap] Pre-Checkin mode (pref-boundary): Using pref-boundary origin:", origin.pref, routeOrigin);
+      console.log("[GoogleMap] Pre-Checkin mode: Destination is Koyo:", routeDestination);
+    } else if (isPreCheckinFixed && origin.lat && origin.lng) {
+      // Pre-Checkinモード（A〜E固定地点）: A〜Eの地点 → AI spots → 古窯
+      routeOrigin = { lat: origin.lat, lng: origin.lng };
+      // 古窯を目的地に（koyoOriginがなければcenterを使用）
+      if (!koyoOrigin) {
+        console.warn("[GoogleMap] koyoOrigin not provided, using center as destination");
+      }
+      routeDestination = koyoOrigin || center; // 古窯を目的地に
+      routeWaypoints = validSpots.map((s) => ({
+        location: { lat: s.lat, lng: s.lng },
+        stopover: true,
+      }));
+      console.log("[GoogleMap] Pre-Checkin mode (fixed): Using fixed origin:", origin.name, routeOrigin);
+      console.log("[GoogleMap] Pre-Checkin mode: Destination is Koyo:", routeDestination);
+      console.log("[GoogleMap] Pre-Checkin mode: koyoOrigin provided:", !!koyoOrigin);
+    } else if (koyoOrigin) {
+      // 既存モード: 古窯 → AI spots（最後のスポットが目的地）
+      routeOrigin = koyoOrigin;
+      routeDestination = {
+        lat: validSpots[validSpots.length - 1].lat,
+        lng: validSpots[validSpots.length - 1].lng,
+      };
+      routeWaypoints =
+        validSpots.length > 1
+          ? validSpots.slice(0, -1).map((s) => ({
+              location: { lat: s.lat, lng: s.lng },
+              stopover: true,
+            }))
+          : [];
+      console.log("[GoogleMap] Using Koyo origin (fixed):", routeOrigin);
+    } else {
+      console.warn("[GoogleMap] No origin provided");
+      return;
+    }
 
     const google = (window as any).google;
     if (!google || !google.maps) {
@@ -219,17 +257,33 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
     }
 
     // デバッグ情報を出力
-    console.log("[GoogleMap] Drawing route from Koyo (origin) to", validSpots.length, "AI spots");
-    console.log("[GoogleMap] Origin: 古窯 (固定)", origin);
-    console.log("[GoogleMap] Destination:", validSpots[validSpots.length - 1].name, destination);
-    if (waypoints.length > 0) {
-      console.log("[GoogleMap] Waypoints:", waypoints.map((w, i) => `${validSpots[i].name} (${w.location.lat}, ${w.location.lng})`));
+    if (isPreCheckinPrefBoundary) {
+      console.log("[GoogleMap] Drawing Pre-Checkin route: pref-boundary →", validSpots.length, "AI spots → Koyo");
+      console.log("[GoogleMap] Origin (pref-boundary):", routeOrigin);
+      console.log("[GoogleMap] Destination (Koyo):", routeDestination);
+      if (routeWaypoints.length > 0) {
+        console.log("[GoogleMap] Waypoints:", routeWaypoints.map((w, i) => `${validSpots[i].name} (${w.location.lat}, ${w.location.lng})`));
+      }
+    } else if (isPreCheckinFixed) {
+      console.log("[GoogleMap] Drawing Pre-Checkin route: fixed origin (", origin.name, ") →", validSpots.length, "AI spots → Koyo");
+      console.log("[GoogleMap] Origin (fixed):", routeOrigin);
+      console.log("[GoogleMap] Destination (Koyo):", routeDestination);
+      if (routeWaypoints.length > 0) {
+        console.log("[GoogleMap] Waypoints:", routeWaypoints.map((w, i) => `${validSpots[i].name} (${w.location.lat}, ${w.location.lng})`));
+      }
+    } else {
+      console.log("[GoogleMap] Drawing route from Koyo to", validSpots.length, "AI spots");
+      console.log("[GoogleMap] Origin (Koyo):", routeOrigin);
+      console.log("[GoogleMap] Destination:", validSpots[validSpots.length - 1].name, routeDestination);
+      if (routeWaypoints.length > 0) {
+        console.log("[GoogleMap] Waypoints:", routeWaypoints.map((w, i) => `${validSpots[i].name} (${w.location.lat}, ${w.location.lng})`));
+      }
     }
     directionsServiceRef.current.route(
       {
-        origin,
-        destination,
-        waypoints: waypoints.length > 0 ? waypoints : undefined,
+        origin: routeOrigin,
+        destination: routeDestination,
+        waypoints: routeWaypoints.length > 0 ? routeWaypoints : undefined,
         travelMode: google.maps.TravelMode.DRIVING,
       },
       (result: any, status: any) => {
@@ -257,15 +311,15 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
               "1. 座標データが正しくない\n" +
               "2. 出発地と目的地が離れすぎている、または到達不可能\n" +
               "3. 経由地の順序が不適切\n" +
-              `出発地: ${validSpots[0].name} (${origin.lat}, ${origin.lng})\n` +
-              `目的地: ${validSpots[validSpots.length - 1].name} (${destination.lat}, ${destination.lng})\n` +
-              `経由地数: ${waypoints.length}`
+              `出発地: ${isPreCheckinPrefBoundary ? "県境" : isPreCheckinFixed ? origin.name : validSpots[0]?.name || "古窯"} (${routeOrigin.lat}, ${routeOrigin.lng})\n` +
+              `目的地: ${isPreCheckinPrefBoundary || isPreCheckinFixed ? "古窯" : validSpots[validSpots.length - 1].name} (${routeDestination.lat}, ${routeDestination.lng})\n` +
+              `経由地数: ${routeWaypoints.length}`
             );
           }
         }
       }
     );
-  }, [showRoute, koyoOrigin]);
+  }, [showRoute, koyoOrigin, origin]);
 
   // マップの中心を更新
   useEffect(() => {

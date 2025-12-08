@@ -177,7 +177,25 @@ export function resolveOriginFromFreeInput(message: string): OriginResolutionRes
   // 5. マッチしない場合
   return {
     type: "unknown",
-    message: `出発地「${message}」を認識できませんでした。\n以下のいずれかを選択してください：\n- 宮城（仙台）\n- 福島\n- 秋田\n- 新潟\n\nまたは、A〜Eの選択肢から選んでください。`,
+    message: `出発地「${message}」を認識できませんでした。
+
+以下のいずれかを選択してください：
+
+【山形県内の出発地】
+A. 山形駅
+B. 山形空港
+C. かみのやま温泉駅
+D. 山形蔵王IC（高速）
+E. かみのやま温泉IC（高速）
+F. 現在地を使う
+
+【他県からの出発地】
+- 宮城（仙台）
+- 福島
+- 秋田
+- 新潟
+
+例：「A」「空港」「仙台」など簡単でOKです！`,
   };
 }
 

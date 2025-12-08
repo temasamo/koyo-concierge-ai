@@ -33,6 +33,8 @@ export default function Page() {
   const setSpots = useSpotStore((s) => s.setSpots);
   const clearSpots = useSpotStore((s) => s.clearSpots);
   const spots = useSpotStore((s) => s.spots);
+  const setOrigin = useSpotStore((s) => s.setOrigin);
+  const clearOrigin = useSpotStore((s) => s.clearOrigin);
 
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   const prevModeRef = useRef<KoyoMode>(mode);
@@ -50,11 +52,12 @@ export default function Page() {
     // 地図ページから戻ってきた場合は、スポットを保持する
     const isReturningFromMap = prevPathnameRef.current === "/map" && pathname === "/";
     
-    // モードが実際に変わった時のみスポットをクリア（地図ページから戻った時はクリアしない）
-    if (prevModeRef.current !== mode) {
-      console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
-      clearSpots();
-      prevModeRef.current = mode;
+      // モードが実際に変わった時のみスポットをクリア（地図ページから戻った時はクリアしない）
+      if (prevModeRef.current !== mode) {
+        console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
+        clearSpots();
+        clearOrigin();
+        prevModeRef.current = mode;
     } else if (isReturningFromMap) {
       console.log(`[page.tsx] Returning from map page, keeping spots (count: ${spots.length})`);
     } else {
@@ -63,7 +66,7 @@ export default function Page() {
     
     // パス名を更新
     prevPathnameRef.current = pathname;
-  }, [mode, pathname, clearSpots, resetToInitial, spots.length]);
+  }, [mode, pathname, clearSpots, clearOrigin, resetToInitial, spots.length]);
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
@@ -106,6 +109,15 @@ export default function Page() {
       // デバッグログ
       console.log("[page.tsx] API response:", data);
       console.log("[page.tsx] spots:", data.spots);
+      console.log("[page.tsx] origin:", data.origin);
+
+      // origin情報を保存（Pre-Checkinモード用）
+      if (data.origin) {
+        setOrigin(data.origin);
+        console.log("[page.tsx] Set origin:", data.origin);
+      } else {
+        clearOrigin();
+      }
 
       // ============================================================
       // スポット配列の受け取り処理
