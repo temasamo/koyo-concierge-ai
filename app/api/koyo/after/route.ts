@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
+import { KOYO_COORDINATES } from "@/constants/koyo";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -557,6 +558,20 @@ export async function POST(req: NextRequest) {
     if (matchedSpots && matchedSpots.length > 0) {
       response.spots = matchedSpots;
     }
+
+    // routeInfo を構築（Afterモード：originは古窯固定、destinationも古窯固定（Phase 3））
+    const waypoints =
+      matchedSpots && Array.isArray(matchedSpots)
+        ? matchedSpots
+            .filter((s: any) => s.lat != null && s.lng != null)
+            .map((s: any) => ({ lat: s.lat, lng: s.lng }))
+        : [];
+
+    response.routeInfo = {
+      origin: KOYO_COORDINATES,
+      waypoints,
+      destination: KOYO_COORDINATES,
+    };
 
     return NextResponse.json(response);
   } catch (error: any) {

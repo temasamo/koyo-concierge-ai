@@ -3,34 +3,74 @@
 import { useRouter } from "next/navigation";
 import GoogleMap from "@/components/map/GoogleMap";
 import { useSpotStore } from "@/store/spots";
+import { KOYO_COORDINATES } from "@/constants/koyo";
+import { buildGoogleMapsUrl } from "@/utils/googleMaps";
 
 export default function MapPage() {
   const router = useRouter();
   const spots = useSpotStore((state) => state.spots);
   const origin = useSpotStore((state) => state.origin);
+  const routeInfo = useSpotStore((state) => state.routeInfo);
 
   // 古窯（上山温泉）の公式座標
-  const center = { lat: 38.14828716772903, lng: 140.261163693796 };
+  const center = KOYO_COORDINATES;
 
   // デバッグ用
   console.log("[MapPage] Spots:", spots);
   console.log("[MapPage] Spots count:", spots.length);
   console.log("[MapPage] Origin:", origin);
+  console.log("[MapPage] RouteInfo:", routeInfo);
+
+  const handleOpenGoogleMaps = () => {
+    if (!routeInfo) {
+      console.warn("[MapPage] routeInfo is not available");
+      return;
+    }
+
+    const url = buildGoogleMapsUrl(
+      routeInfo.origin,
+      routeInfo.waypoints,
+      routeInfo.destination
+    );
+    window.open(url, "_blank");
+  };
 
   return (
     <div className="w-full h-screen flex flex-col overflow-hidden">
       {/* ヘッダー */}
-      <div className="bg-white shadow-sm px-4 py-3 flex items-center flex-shrink-0">
-        <button
-          onClick={() => router.push("/")}
-          className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-        >
-          ← 戻る
-        </button>
-        {spots.length > 0 && (
-          <span className="ml-4 text-sm text-gray-600">
-            {spots.length}件のスポットを表示中
-          </span>
+      <div className="bg-white shadow-sm px-4 py-3 flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center">
+          <button
+            onClick={() => router.push("/")}
+            className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            ← 戻る
+          </button>
+          {spots.length > 0 && (
+            <span className="ml-4 text-sm text-gray-600">
+              {spots.length}件のスポットを表示中
+            </span>
+          )}
+        </div>
+        {routeInfo && (
+          <button
+            onClick={handleOpenGoogleMaps}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Googleマップで開く
+          </button>
         )}
       </div>
 

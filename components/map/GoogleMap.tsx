@@ -247,29 +247,77 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
         routeDestination
       );
     } else if (koyoOrigin) {
-      // 通常モード：古窯 → スポット
+      // 通常モード（Stay/After/通常Before）：古窯 → スポット → 古窯
       routeOrigin = koyoOrigin;
-      routeDestination = {
-        lat: validSpots[validSpots.length - 1].lat,
-        lng: validSpots[validSpots.length - 1].lng,
-      };
-      routeWaypoints =
-        validSpots.length > 1
-          ? validSpots.slice(0, -1).map((s) => ({
-              location: { lat: s.lat, lng: s.lng },
-              stopover: true,
-            }))
-          : [];
+      routeDestination = koyoOrigin; // Phase 1仕様：常に古窯をdestinationに
+      routeWaypoints = validSpots.map((s) => ({
+        location: { lat: s.lat, lng: s.lng },
+        stopover: true,
+      }));
       console.log(
-        "[GoogleMap] Normal mode: Koyo -> spots",
+        "[GoogleMap] Normal mode: Koyo -> spots -> Koyo",
         routeOrigin,
         "=>",
-        routeDestination
+        routeDestination,
+        "waypoints:",
+        routeWaypoints.length
       );
     } else {
       console.warn("[GoogleMap] No origin provided");
       return;
     }
+    // 座標の妥当性チェック
+    const isValidCoordinate = (coord: { lat: number; lng: number }) => {
+      return (
+        typeof coord.lat === "number" &&
+        typeof coord.lng === "number" &&
+        !isNaN(coord.lat) &&
+        !isNaN(coord.lng) &&
+        coord.lat >= -90 &&
+        coord.lat <= 90 &&
+        coord.lng >= -180 &&
+        coord.lng <= 180
+      );
+    };
+
+    if (!isValidCoordinate(routeOrigin)) {
+      console.error("[GoogleMap] Invalid origin coordinates:", routeOrigin);
+      return;
+    }
+
+    if (!isValidCoordinate(routeDestination)) {
+      console.error("[GoogleMap] Invalid destination coordinates:", routeDestination);
+      return;
+    }
+
+    // waypointsの座標を検証
+    const invalidWaypoints = routeWaypoints.filter(
+      (wp) => !isValidCoordinate(wp.location)
+    );
+    if (invalidWaypoints.length > 0) {
+      console.error("[GoogleMap] Invalid waypoint coordinates:", invalidWaypoints);
+      return;
+    }
+
+    // waypointsが空でoriginとdestinationが同じ場合はルートを描画しない
+    if (
+      routeWaypoints.length === 0 &&
+      routeOrigin.lat === routeDestination.lat &&
+      routeOrigin.lng === routeDestination.lng
+    ) {
+      console.warn(
+        "[GoogleMap] Cannot draw route: origin and destination are the same with no waypoints"
+      );
+      return;
+    }
+
+    console.log("[GoogleMap] Requesting route:", {
+      origin: routeOrigin,
+      destination: routeDestination,
+      waypointsCount: routeWaypoints.length,
+      waypoints: routeWaypoints.map((wp) => wp.location),
+    });
+
     directionsServiceRef.current.route(
       {
         origin: routeOrigin,
@@ -283,7 +331,11 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
           lastRouteSpotsRef.current = currentRouteKey;
           console.log("[GoogleMap] Route drawn successfully");
         } else {
-          console.error("[GoogleMap] Directions API error:", status);
+          console.error("[GoogleMap] Directions API error:", status, {
+            origin: routeOrigin,
+            destination: routeDestination,
+            waypointsCount: routeWaypoints.length,
+          });
         }
       }
     );

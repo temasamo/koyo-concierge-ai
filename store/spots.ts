@@ -33,6 +33,12 @@ export type OriginInfo = {
   name?: string | null; // オプショナル（fixed タイプの場合のみ使用）
 };
 
+export type RouteInfo = {
+  origin: { lat: number; lng: number };
+  waypoints: Array<{ lat: number; lng: number }>;
+  destination: { lat: number; lng: number };
+};
+
 type SpotStore = {
   spots: Spot[];
   setSpots: (spots: Spot[]) => void;
@@ -40,6 +46,9 @@ type SpotStore = {
   origin: OriginInfo;
   setOrigin: (origin: OriginInfo) => void;
   clearOrigin: () => void;
+  routeInfo: RouteInfo | null;
+  setRouteInfo: (routeInfo: RouteInfo | null) => void;
+  clearRouteInfo: () => void;
 };
 
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -57,5 +66,8 @@ export const useSpotStore = create<SpotStore>((set) => ({
   origin: DEFAULT_ORIGIN,
   setOrigin: (origin) => set({ origin }),
   clearOrigin: () => set({ origin: DEFAULT_ORIGIN }),
+  routeInfo: null,
+  setRouteInfo: (routeInfo) => set({ routeInfo }),
+  clearRouteInfo: () => set({ routeInfo: null }),
 }));
 

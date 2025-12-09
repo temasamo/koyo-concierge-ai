@@ -10,6 +10,8 @@ import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckin
 import { resolveOriginFromFreeInput, getOriginFromPrefecture } from "./_utils/originResolver";
 import type { PrefectureKey } from "./_constants/prefEntryPoints";
 import type { OriginInfo } from "@/store/spots";
+import { KOYO_COORDINATES } from "@/constants/koyo";
+import { getPrefBoundary } from "@/store/prefBoundaries";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -533,10 +535,36 @@ export async function POST(req: NextRequest) {
           userMessage,
         });
 
+        // routeInfo を構築（origin/waypoints/destination）
+        let routeOrigin: { lat: number; lng: number };
+        if (currentOrigin.type === "pref-boundary" && currentOrigin.pref) {
+          const prefBoundary = getPrefBoundary(currentOrigin.pref);
+          routeOrigin = prefBoundary;
+        } else {
+          routeOrigin = {
+            lat: currentOrigin.lat as number,
+            lng: currentOrigin.lng as number,
+          };
+        }
+
+        const waypoints =
+          plan.spots && Array.isArray(plan.spots)
+            ? plan.spots
+                .filter((s: any) => s.lat != null && s.lng != null)
+                .map((s: any) => ({ lat: s.lat, lng: s.lng }))
+            : [];
+
+        const destination = KOYO_COORDINATES;
+
         // ✅ Pre-Checkin 時だけ origin を返す
         return NextResponse.json({
           ...plan,
           origin: currentOrigin,
+          routeInfo: {
+            origin: routeOrigin,
+            waypoints,
+            destination,
+          },
         });
       } catch (error: any) {
         console.error("[koyo-before] Pre-Checkin plan generation error:", error);
@@ -601,6 +629,13 @@ G. その他（自由入力）
             userMessage,
           });
 
+          const waypoints =
+            plan.spots && Array.isArray(plan.spots)
+              ? plan.spots
+                  .filter((s: any) => s.lat != null && s.lng != null)
+                  .map((s: any) => ({ lat: s.lat, lng: s.lng }))
+              : [];
+
           return NextResponse.json({
             ...plan,
             origin: {
@@ -610,6 +645,11 @@ G. その他（自由入力）
               lat: originSelection.lat,
               lng: originSelection.lng,
             } as OriginInfo,
+            routeInfo: {
+              origin: { lat: originSelection.lat, lng: originSelection.lng },
+              waypoints,
+              destination: KOYO_COORDINATES,
+            },
           });
         } catch (error: any) {
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
@@ -640,6 +680,14 @@ G. その他（自由入力）
             prefecture: resolution.prefecture,
           });
 
+          const prefBoundary = getPrefBoundary(resolution.prefecture);
+          const waypoints =
+            plan.spots && Array.isArray(plan.spots)
+              ? plan.spots
+                  .filter((s: any) => s.lat != null && s.lng != null)
+                  .map((s: any) => ({ lat: s.lat, lng: s.lng }))
+              : [];
+
           return NextResponse.json({
             ...plan,
             origin: {
@@ -648,6 +696,11 @@ G. その他（自由入力）
               lat: null,
               lng: null, // 座標はフロント側で県境から決定
             } as OriginInfo,
+            routeInfo: {
+              origin: prefBoundary,
+              waypoints,
+              destination: KOYO_COORDINATES,
+            },
           });
         } catch (error: any) {
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
@@ -775,6 +828,20 @@ G. その他（自由入力）
 
     // すべてのレスポンスに origin を含める（通常モードは null 値）
     response.origin = DEFAULT_ORIGIN;
+
+    // routeInfo を構築（通常モード：originは古窯固定）
+    const waypoints =
+      matchedSpots && Array.isArray(matchedSpots)
+        ? matchedSpots
+            .filter((s: any) => s.lat != null && s.lng != null)
+            .map((s: any) => ({ lat: s.lat, lng: s.lng }))
+        : [];
+
+    response.routeInfo = {
+      origin: KOYO_COORDINATES,
+      waypoints,
+      destination: KOYO_COORDINATES,
+    };
 
     return NextResponse.json(response);
   } catch (error: any) {

@@ -36,6 +36,8 @@ export default function Page() {
   const origin = useSpotStore((s) => s.origin);
   const setOrigin = useSpotStore((s) => s.setOrigin);
   const clearOrigin = useSpotStore((s) => s.clearOrigin);
+  const setRouteInfo = useSpotStore((s) => s.setRouteInfo);
+  const clearRouteInfo = useSpotStore((s) => s.clearRouteInfo);
 
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   const prevModeRef = useRef<KoyoMode>(mode);
@@ -58,6 +60,7 @@ export default function Page() {
         console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
         clearSpots();
         clearOrigin();
+        clearRouteInfo();
         prevModeRef.current = mode;
     } else if (isReturningFromMap) {
       console.log(`[page.tsx] Returning from map page, keeping spots (count: ${spots.length})`);
@@ -114,6 +117,7 @@ export default function Page() {
       console.log("[page.tsx] API response:", data);
       console.log("[page.tsx] spots:", data.spots);
       console.log("[page.tsx] origin:", data.origin);
+      console.log("[page.tsx] routeInfo:", data.routeInfo);
 
       // 🔽 origin の扱いを修正
       if (data.origin && data.origin.type !== null) {
@@ -124,6 +128,15 @@ export default function Page() {
         // 通常 Before / Stay / After など → origin はクリア
         clearOrigin();
         console.log("[page.tsx] Clear origin (normal mode)");
+      }
+
+      // 🔽 routeInfo の扱い
+      if (data.routeInfo) {
+        setRouteInfo(data.routeInfo);
+        console.log("[page.tsx] Set routeInfo:", data.routeInfo);
+      } else {
+        clearRouteInfo();
+        console.log("[page.tsx] Clear routeInfo");
       }
 
       // ============================================================
