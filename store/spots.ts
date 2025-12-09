@@ -25,27 +25,37 @@ export type Spot = {
   stayMinutes?: number;
 };
 
-type OriginInfo = {
-  type: "pref-boundary" | "fixed" | "current";
-  pref?: "miyagi" | "fukushima" | "akita" | "niigata";
-  name?: string;
+export type OriginInfo = {
+  type: "pref-boundary" | "fixed" | "current" | null;
+  pref: "miyagi" | "fukushima" | "akita" | "niigata" | null;
+  lat: number | null;
+  lng: number | null;
+  name?: string | null; // オプショナル（fixed タイプの場合のみ使用）
 };
 
 type SpotStore = {
   spots: Spot[];
   setSpots: (spots: Spot[]) => void;
   clearSpots: () => void;
-  origin?: OriginInfo;
-  setOrigin: (origin?: OriginInfo) => void;
+  origin: OriginInfo;
+  setOrigin: (origin: OriginInfo) => void;
   clearOrigin: () => void;
+};
+
+const DEFAULT_ORIGIN: OriginInfo = {
+  type: null,
+  pref: null,
+  lat: null,
+  lng: null,
+  name: null,
 };
 
 export const useSpotStore = create<SpotStore>((set) => ({
   spots: [],
   setSpots: (spots) => set({ spots }),
   clearSpots: () => set({ spots: [] }),
-  origin: undefined,
+  origin: DEFAULT_ORIGIN,
   setOrigin: (origin) => set({ origin }),
-  clearOrigin: () => set({ origin: undefined }),
+  clearOrigin: () => set({ origin: DEFAULT_ORIGIN }),
 }));
 

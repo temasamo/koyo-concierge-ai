@@ -9,6 +9,7 @@ import { parseOriginSelection, type Origin } from "@/lib/koyo/precheckin/origins
 import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckinPlan";
 import { resolveOriginFromFreeInput, getOriginFromPrefecture } from "./_utils/originResolver";
 import type { PrefectureKey } from "./_constants/prefEntryPoints";
+import type { OriginInfo } from "@/store/spots";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -85,7 +86,11 @@ async function getSystemPrompt(): Promise<string> {
 
   return `
 あなたは「古窯 旅館コンシェルAI（旅前）」です。
-旅行前の計画段階で、お客様に最適な観光プランを丁寧にご案内する若女将AIとしてふるまいます。
+「旅前（Before）モード」とは、旅行全体の計画を立てるためのモードであり、
+ユーザーがチェックイン前・チェックイン後・チェックアウト後のいずれのタイミングで利用しても問題ありません。
+実際の時系列にかかわらず、常に「旅行全体の計画」を立てられるモードとして振る舞ってください。
+お客様に最適な観光プランを丁寧にご案内する若女将AIとしてふるまいます。
+
 
 【重要】あなたの返答は必ずJSON形式で返してください。テキストのみの返答は絶対に禁止です。
 
@@ -447,53 +452,115 @@ function cleanReplyMessage(reply: string): string {
  * - userState: ユーザーの状態（originなど）
  */
 type BeforeRequestBody =
-  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: Origin } }
-  | { query: string; userState?: { origin?: Origin } };
+  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo } }
+  | { query: string; userState?: { origin?: OriginInfo } };
+
+// デフォルトの origin 値
+const DEFAULT_ORIGIN: OriginInfo = {
+  type: null,
+  pref: null,
+  lat: null,
+  lng: null,
+  name: null,
+};
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as BeforeRequestBody;
 
+    // 1️⃣ ユーザーメッセージを取得
     let userMessages: ChatCompletionMessageParam[];
     let userMessage: string;
 
     if ("messages" in body && Array.isArray(body.messages)) {
-      // フロントの履歴を採用
       userMessages = body.messages;
-      // 最後のユーザーメッセージを取得
-      const lastUserMessage = userMessages
-        .filter((m) => m.role === "user")
-        .pop();
-      userMessage = typeof lastUserMessage?.content === "string" 
-        ? lastUserMessage.content 
-        : "";
+      const lastUserMessage = userMessages.filter((m) => m.role === "user").pop();
+      userMessage =
+        typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
     } else if ("query" in body && typeof body.query === "string") {
-      // 単発問い合わせモード（MVP向け）
       userMessage = body.query;
-      userMessages = [
-        {
-          role: "user",
-          content: body.query,
-        },
-      ];
+      userMessages = [{ role: "user", content: body.query }];
     } else {
       return NextResponse.json(
-        { error: "messages または query が必要です。" },
+        { error: "messages または query が必要です。", origin: DEFAULT_ORIGIN },
         { status: 400 }
       );
     }
 
+    // 2️⃣ ユーザー状態（origin）を取得
     const userState = body.userState || {};
+    const currentOrigin: OriginInfo = userState.origin || DEFAULT_ORIGIN;
 
-    // 1. Pre-Checkin Intent 判定
-    const isPreCheckin = detectPreCheckinIntent(userMessage);
+    const hasOrigin =
+      currentOrigin &&
+      currentOrigin.type !== null &&
+      currentOrigin.lat !== null &&
+      currentOrigin.lng !== null;
 
-    if (isPreCheckin) {
-      // origin 未設定 → 質問フェーズへ
-      if (!userState.origin) {
+    const isPreCheckinIntent = detectPreCheckinIntent(userMessage);
+    const originSelection = parseOriginSelection(userMessage); // 「A〜G」などの返答
+
+    // --------------------------------------------------
+    // A. すでに origin が決まっている場合
+    //    → 「Pre-Checkin プラン生成モード」とみなす
+    // --------------------------------------------------
+    if (hasOrigin) {
+      try {
+        let originForPlan: Origin;
+        let prefecture: PrefectureKey | undefined;
+
+        if (currentOrigin.type === "pref-boundary" && currentOrigin.pref) {
+          // 県境モード：県境座標を backend で解決
+          const resolved = getOriginFromPrefecture(currentOrigin.pref);
+          originForPlan = {
+            name: resolved.name,
+            lat: resolved.lat,
+            lng: resolved.lng,
+          };
+          prefecture = currentOrigin.pref;
+        } else {
+          // 固定地点 or current
+          originForPlan = {
+            name: currentOrigin.name || "",
+            lat: currentOrigin.lat || 0,
+            lng: currentOrigin.lng || 0,
+          };
+        }
+
+        const plan = await generatePrecheckinPlan({
+          origin: originForPlan,
+          prefecture,
+          userMessage,
+        });
+
+        // ✅ Pre-Checkin 時だけ origin を返す
         return NextResponse.json({
-          mode: "precheckin-origin-select",
-          reply: `
+          ...plan,
+          origin: currentOrigin,
+        });
+      } catch (error: any) {
+        console.error("[koyo-before] Pre-Checkin plan generation error:", error);
+        return NextResponse.json(
+          {
+            error: "Pre-Checkinプランの生成中にエラーが発生しました。",
+            detail: error?.message ?? String(error),
+            origin: currentOrigin,
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    // ここに来る時点では「origin 未決定（type === null）」とする
+
+    // --------------------------------------------------
+    // B. 「チェックイン前のプラン」などのトリガー発話
+    //    → 出発地の選択肢を聞く
+    // --------------------------------------------------
+    if (isPreCheckinIntent && !originSelection) {
+      return NextResponse.json({
+        mode: "precheckin-origin-select",
+        reply: `
 チェックイン前の観光プランをお作りしますね！
 まず、出発地を教えてください。
 
@@ -506,60 +573,43 @@ F. 現在地を使う
 G. その他（自由入力）
 
 例：「A」「空港」「現在地で」など簡単でOKです！
-`.trim()
-        });
-      }
-
-      // origin がある → PreCheckin プラン生成モードへ
-      try {
-        const plan = await generatePrecheckinPlan({
-          origin: userState.origin,
-          userMessage: userMessage,
-        });
-
-        return NextResponse.json(plan);
-      } catch (error: any) {
-        console.error("[koyo-before] Pre-Checkin plan generation error:", error);
-        return NextResponse.json(
-          {
-            error: "Pre-Checkinプランの生成中にエラーが発生しました。",
-            detail: error?.message ?? String(error),
-          },
-          { status: 500 }
-        );
-      }
+`.trim(),
+        origin: DEFAULT_ORIGIN, // まだ決まっていない
+      });
     }
 
-    // 2. Origin選択回答の処理（Pre-Checkinモードでorigin未設定の場合の回答）
-    // 注意: この処理は Pre-Checkin intent が検出された場合のみ実行する
-    // （通常の Before モードでは実行しない）
-    if (isPreCheckin && !userState.origin) {
-      const parsedOrigin = parseOriginSelection(userMessage);
-      
-      if (parsedOrigin && "useCurrentLocation" in parsedOrigin) {
-        // 現在地指定の場合は、フロントエンドで処理する必要がある
+    // --------------------------------------------------
+    // C. A〜G の選択に対する回答（originSelection が取れた場合）
+    // --------------------------------------------------
+    if (originSelection) {
+      // F. 現在地を使う
+      if ("useCurrentLocation" in originSelection && originSelection.useCurrentLocation) {
         return NextResponse.json({
-        mode: "precheckin-origin-select",
-        reply: "現在地を使用する場合は、ブラウザの位置情報を許可してください。位置情報が取得できない場合は、A〜Eから選択してください。",
-        requiresLocation: true,
-      });
-      } else if (parsedOrigin && "name" in parsedOrigin) {
-        // originが選択された場合（A〜E）、Pre-Checkinプランを生成
+          mode: "precheckin-origin-select",
+          reply:
+            "現在地を使用する場合は、ブラウザの位置情報を許可してください。位置情報が取得できない場合は、A〜Eから選択してください。",
+          requiresLocation: true,
+          origin: DEFAULT_ORIGIN,
+        });
+      }
+
+      // A〜E の固定地点
+      if ("name" in originSelection) {
         try {
           const plan = await generatePrecheckinPlan({
-            origin: parsedOrigin,
-            userMessage: userMessage,
+            origin: originSelection,
+            userMessage,
           });
 
-          // A〜Eを選択した場合、レスポンスにorigin情報を追加（fixedタイプ）
           return NextResponse.json({
             ...plan,
             origin: {
               type: "fixed",
-              name: parsedOrigin.name,
-              lat: parsedOrigin.lat,
-              lng: parsedOrigin.lng,
-            },
+              pref: null,
+              name: originSelection.name,
+              lat: originSelection.lat,
+              lng: originSelection.lng,
+            } as OriginInfo,
           });
         } catch (error: any) {
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
@@ -567,65 +617,75 @@ G. その他（自由入力）
             {
               error: "Pre-Checkinプランの生成中にエラーが発生しました。",
               detail: error?.message ?? String(error),
+              origin: DEFAULT_ORIGIN,
             },
             { status: 500 }
           );
         }
-      } else {
-        // 3. 自由入力（G）の場合：県名を推定して県境座標を決定
-        const resolution = resolveOriginFromFreeInput(userMessage);
-        
-        if (resolution.type === "resolved") {
-          // 県名が特定できた場合、Pre-Checkinプランを生成
-          try {
-            const plan = await generatePrecheckinPlan({
-              origin: resolution.origin,
-              userMessage: userMessage,
-              prefecture: resolution.prefecture, // 県名を追加
-            });
-
-            // レスポンスにorigin情報を追加（指示形式に合わせる）
-            return NextResponse.json({
-              ...plan,
-              origin: {
-                type: "pref-boundary",
-                pref: resolution.prefecture,
-              },
-            });
-          } catch (error: any) {
-            console.error("[koyo-before] Pre-Checkin plan generation error:", error);
-            return NextResponse.json(
-              {
-                error: "Pre-Checkinプランの生成中にエラーが発生しました。",
-                detail: error?.message ?? String(error),
-              },
-              { status: 500 }
-            );
-          }
-        } else if (resolution.type === "ambiguous") {
-          // 曖昧な入力の場合、質問を返す（指示形式に合わせる）
-          return NextResponse.json({
-            type: "ask-pref",
-            mode: "precheckin-origin-select",
-            reply: resolution.message,
-            message: resolution.message,
-            choices: resolution.candidates,
-          });
-        } else {
-          // 認識できない場合、質問を返す
-          return NextResponse.json({
-            type: "ask-pref",
-            mode: "precheckin-origin-select",
-            reply: resolution.message,
-            message: resolution.message,
-          });
-        }
       }
     }
 
-    // --- Pre-Checkin ではない（既存 Before の処理へ） ---
+    // --------------------------------------------------
+    // D. 自由入力（G）など：文章から県を推定するパス
+    //    ※ Pre-Checkin intent の場合のみ実行
+    // --------------------------------------------------
+    if (isPreCheckinIntent) {
+      const resolution = resolveOriginFromFreeInput(userMessage);
 
-    // Supabaseからスポット一覧を取得してシステムプロンプトを生成
+      if (resolution.type === "resolved") {
+        try {
+          const plan = await generatePrecheckinPlan({
+            origin: resolution.origin,
+            userMessage,
+            prefecture: resolution.prefecture,
+          });
+
+          return NextResponse.json({
+            ...plan,
+            origin: {
+              type: "pref-boundary",
+              pref: resolution.prefecture,
+              lat: null,
+              lng: null, // 座標はフロント側で県境から決定
+            } as OriginInfo,
+          });
+        } catch (error: any) {
+          console.error("[koyo-before] Pre-Checkin plan generation error:", error);
+          return NextResponse.json(
+            {
+              error: "Pre-Checkinプランの生成中にエラーが発生しました。",
+              detail: error?.message ?? String(error),
+              origin: DEFAULT_ORIGIN,
+            },
+            { status: 500 }
+          );
+        }
+      }
+
+      if (resolution.type === "ambiguous") {
+        return NextResponse.json({
+          type: "ask-pref",
+          mode: "precheckin-origin-select",
+          reply: resolution.message,
+          message: resolution.message,
+          choices: resolution.candidates,
+          origin: DEFAULT_ORIGIN,
+        });
+      }
+
+      if (resolution.type === "unknown") {
+        return NextResponse.json({
+          mode: "precheckin-origin-select",
+          reply: resolution.message,
+          origin: DEFAULT_ORIGIN,
+        });
+      }
+    }
+
+    // --------------------------------------------------
+    // E. ここまで来たら「Pre-Checkin ではない通常の Before」
+    // --------------------------------------------------
+
     const systemPrompt = await getSystemPrompt();
 
     const messages: ChatCompletionMessageParam[] = [
@@ -713,6 +773,9 @@ G. その他（自由入力）
       response.spots = matchedSpots;
     }
 
+    // すべてのレスポンスに origin を含める（通常モードは null 値）
+    response.origin = DEFAULT_ORIGIN;
+
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("[koyo-before] error:", error);
@@ -720,6 +783,7 @@ G. その他（自由入力）
       {
         error: "旅前AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
+        origin: DEFAULT_ORIGIN,
       },
       { status: 500 }
     );

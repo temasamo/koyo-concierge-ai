@@ -33,6 +33,7 @@ export default function Page() {
   const setSpots = useSpotStore((s) => s.setSpots);
   const clearSpots = useSpotStore((s) => s.clearSpots);
   const spots = useSpotStore((s) => s.spots);
+  const origin = useSpotStore((s) => s.origin);
   const setOrigin = useSpotStore((s) => s.setOrigin);
   const clearOrigin = useSpotStore((s) => s.clearOrigin);
 
@@ -97,6 +98,9 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: latestMessages,
+          userState: {
+            origin: origin,
+          },
         }),
       });
 
@@ -111,12 +115,15 @@ export default function Page() {
       console.log("[page.tsx] spots:", data.spots);
       console.log("[page.tsx] origin:", data.origin);
 
-      // origin情報を保存（Pre-Checkinモード用）
-      if (data.origin) {
+      // 🔽 origin の扱いを修正
+      if (data.origin && data.origin.type !== null) {
+        // Pre-Checkin で決まった origin を保持
         setOrigin(data.origin);
-        console.log("[page.tsx] Set origin:", data.origin);
+        console.log("[page.tsx] Keep origin (Pre-Checkin):", data.origin);
       } else {
+        // 通常 Before / Stay / After など → origin はクリア
         clearOrigin();
+        console.log("[page.tsx] Clear origin (normal mode)");
       }
 
       // ============================================================
