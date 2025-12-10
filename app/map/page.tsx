@@ -106,16 +106,6 @@ export default function MapPage() {
       {routeWarning && (
         <div className="px-4 py-3 bg-yellow-100 text-yellow-800 text-sm flex flex-col gap-2 shadow-inner">
           <div>{routeWarning}</div>
-          <div>
-            <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${destinationForLink.lat},${destinationForLink.lng}`}
-              target="_blank"
-              rel="noreferrer"
-              className="underline text-blue-600"
-            >
-              Googleマップで開く
-            </a>
-          </div>
         </div>
       )}
     </div>
