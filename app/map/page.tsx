@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useState, useMemo } from "react";
 import GoogleMap from "@/components/map/GoogleMap";
 import { useSpotStore } from "@/store/spots";
 import { KOYO_COORDINATES } from "@/constants/koyo";
@@ -11,9 +12,14 @@ export default function MapPage() {
   const spots = useSpotStore((state) => state.spots);
   const origin = useSpotStore((state) => state.origin);
   const routeInfo = useSpotStore((state) => state.routeInfo);
+  const [routeWarning, setRouteWarning] = useState<string | null>(null);
 
   // 古窯（上山温泉）の公式座標
   const center = KOYO_COORDINATES;
+
+  const destinationForLink = useMemo(() => {
+    return routeInfo?.destination ?? center;
+  }, [routeInfo, center]);
 
   // デバッグ用
   console.log("[MapPage] Spots:", spots);
@@ -93,8 +99,25 @@ export default function MapPage() {
           showRoute={true}
           koyoOrigin={center}
           origin={origin}
+          onRouteWarningChange={setRouteWarning}
         />
       </div>
+
+      {routeWarning && (
+        <div className="px-4 py-3 bg-yellow-100 text-yellow-800 text-sm flex flex-col gap-2 shadow-inner">
+          <div>{routeWarning}</div>
+          <div>
+            <a
+              href={`https://www.google.com/maps/dir/?api=1&destination=${destinationForLink.lat},${destinationForLink.lng}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline text-blue-600"
+            >
+              Googleマップで開く
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

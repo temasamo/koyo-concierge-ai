@@ -49,9 +49,18 @@ interface GoogleMapProps {
   showRoute?: boolean; // ルート表示の有効/無効（デフォルト: false）
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
   origin?: OriginInfo; // Pre-Checkinモード用のorigin情報
+  onRouteWarningChange?: (warning: string | null) => void; // ルート取得失敗時の警告メッセージを親に通知
 }
 
-export default function GoogleMap({ center, markers, spots, showRoute = false, koyoOrigin, origin }: GoogleMapProps) {
+export default function GoogleMap({
+  center,
+  markers,
+  spots,
+  showRoute = false,
+  koyoOrigin,
+  origin,
+  onRouteWarningChange,
+}: GoogleMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -65,6 +74,7 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
     Marker: any;
     InfoWindow: any;
   } | null>(null);
+  const [routeWarning, setRouteWarning] = useState<string | null>(null);
 
   // マップの初期化（一度だけ実行）
   useEffect(() => {
@@ -164,6 +174,11 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 一度だけ実行
+
+  // 警告メッセージを親へ伝搬
+  useEffect(() => {
+    onRouteWarningChange?.(routeWarning);
+  }, [routeWarning, onRouteWarningChange]);
 
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {
@@ -333,7 +348,10 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       };
     });
 
-    console.log("[GoogleMap] Requesting route:", {
+    // 事前に警告をクリア
+    setRouteWarning(null);
+
+    console.log("[GoogleMap] Requesting route (DRIVING):", {
       origin: routeOrigin,
       destination: routeDestination,
       waypointsCount: routeWaypoints.length,
@@ -342,7 +360,7 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       waypointDetails,
     });
 
-    // DirectionsServiceに渡すrequestオブジェクト
+    // DirectionsServiceに渡すrequestオブジェクト（DRIVING固定）
     const request = {
       origin: routeOrigin,
       destination: routeDestination,
@@ -350,53 +368,67 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       travelMode: google.maps.TravelMode.DRIVING,
     };
 
-    directionsServiceRef.current.route(
-      request,
-      (result: any, status: any) => {
-        if (status === google.maps.DirectionsStatus.OK && result) {
-          directionsRendererRef.current.setDirections(result);
-          lastRouteSpotsRef.current = currentRouteKey;
-          console.log("[GoogleMap] Route drawn successfully");
-        } else {
-          // ZERO_RESULTS時の詳細ログ
-          console.error("[GoogleMap] Directions API error:", status);
-          console.error("[GoogleMap] Full request object:", JSON.stringify(request, null, 2));
-          console.error("[GoogleMap] Request details:", {
-            origin: {
-              lat: request.origin.lat,
-              lng: request.origin.lng,
-              latType: typeof request.origin.lat,
-              lngType: typeof request.origin.lng,
-              latIsNaN: isNaN(request.origin.lat),
-              lngIsNaN: isNaN(request.origin.lng),
-            },
-            destination: {
-              lat: request.destination.lat,
-              lng: request.destination.lng,
-              latType: typeof request.destination.lat,
-              lngType: typeof request.destination.lng,
-              latIsNaN: isNaN(request.destination.lat),
-              lngIsNaN: isNaN(request.destination.lng),
-            },
-            waypointsCount: request.waypoints?.length || 0,
-            waypoints: request.waypoints?.map((wp, idx) => ({
-              index: idx,
-              location: wp.location,
-              latType: typeof wp.location.lat,
-              lngType: typeof wp.location.lng,
-              latIsNaN: isNaN(wp.location.lat),
-              lngIsNaN: isNaN(wp.location.lng),
-              latValue: wp.location.lat,
-              lngValue: wp.location.lng,
-              stopover: wp.stopover,
-            })),
-            travelMode: request.travelMode,
-            containsZawaoOkama,
-            waypointDetails,
-          });
-        }
+    directionsServiceRef.current.route(request, (result: any, status: any) => {
+      if (status === google.maps.DirectionsStatus.OK && result) {
+        directionsRendererRef.current.setDirections(result);
+        lastRouteSpotsRef.current = currentRouteKey;
+        setRouteWarning(null);
+        console.log("[GoogleMap] Route drawn successfully (DRIVING)");
+        return;
       }
-    );
+
+      const logFailure = () => {
+        console.error("[GoogleMap] Directions API error:", status);
+        console.error("[GoogleMap] Full request object:", JSON.stringify(request, null, 2));
+        console.error("[GoogleMap] Request details:", {
+          origin: {
+            lat: request.origin.lat,
+            lng: request.origin.lng,
+            latType: typeof request.origin.lat,
+            lngType: typeof request.origin.lng,
+            latIsNaN: isNaN(request.origin.lat),
+            lngIsNaN: isNaN(request.origin.lng),
+          },
+          destination: {
+            lat: request.destination.lat,
+            lng: request.destination.lng,
+            latType: typeof request.destination.lat,
+            lngType: typeof request.destination.lng,
+            latIsNaN: isNaN(request.destination.lat),
+            lngIsNaN: isNaN(request.destination.lng),
+          },
+          waypointsCount: request.waypoints?.length || 0,
+          waypoints: request.waypoints?.map((wp, idx) => ({
+            index: idx,
+            location: wp.location,
+            latType: typeof wp.location.lat,
+            lngType: typeof wp.location.lng,
+            latIsNaN: isNaN(wp.location.lat),
+            lngIsNaN: isNaN(wp.location.lng),
+            latValue: wp.location.lat,
+            lngValue: wp.location.lng,
+            stopover: wp.stopover,
+          })),
+          travelMode: request.travelMode,
+          containsZawaoOkama,
+          waypointDetails,
+        });
+      };
+
+      if (status === google.maps.DirectionsStatus.ZERO_RESULTS) {
+        const warning =
+          "🚧 このルートには冬季閉鎖区間が含まれている可能性があります。正確なルートは Google マップでご確認ください。";
+        setRouteWarning(warning);
+        directionsRendererRef.current?.setDirections({ routes: [] as any });
+        logFailure();
+        return;
+      }
+
+      // その他のエラー
+      setRouteWarning("ルートを取得できませんでした。Google マップで代替ルートをご確認ください。");
+      directionsRendererRef.current?.setDirections({ routes: [] as any });
+      logFailure();
+    });
   }, [showRoute, koyoOrigin, origin, center]);
 
   // マップの中心を更新
