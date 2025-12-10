@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
-import { KOYO_COORDINATES } from "@/constants/koyo";
+import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -356,12 +356,21 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
       }
 
       if (matched) {
+        // 座標の修正があるかチェック
+        const coordinateFix = SPOT_COORDINATE_FIXES[matched.id];
+        const finalLat = coordinateFix ? coordinateFix.lat : matched.lat;
+        const finalLng = coordinateFix ? coordinateFix.lng : matched.lng;
+        
+        if (coordinateFix) {
+          console.log(`[koyo-after] Applying coordinate fix for "${matched.name}" (${matched.id}): ${matched.lat},${matched.lng} -> ${finalLat},${finalLng}`);
+        }
+        
         // Supabase形式の完全なデータを使用
         matchedSpots.push({
           id: matched.id,
           name: matched.name,
-          lat: matched.lat,
-          lng: matched.lng,
+          lat: finalLat,
+          lng: finalLng,
           category: matched.category,
           city: matched.city,
           season: matched.season,

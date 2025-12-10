@@ -10,7 +10,7 @@ import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckin
 import { resolveOriginFromFreeInput, getOriginFromPrefecture } from "./_utils/originResolver";
 import type { PrefectureKey } from "./_constants/prefEntryPoints";
 import type { OriginInfo } from "@/store/spots";
-import { KOYO_COORDINATES } from "@/constants/koyo";
+import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 
 // モデルは環境変数で差し替え可能
@@ -371,12 +371,21 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
       }
 
       if (matched) {
+        // 座標の修正があるかチェック
+        const coordinateFix = SPOT_COORDINATE_FIXES[matched.id];
+        const finalLat = coordinateFix ? coordinateFix.lat : matched.lat;
+        const finalLng = coordinateFix ? coordinateFix.lng : matched.lng;
+        
+        if (coordinateFix) {
+          console.log(`[koyo-before] Applying coordinate fix for "${matched.name}" (${matched.id}): ${matched.lat},${matched.lng} -> ${finalLat},${finalLng}`);
+        }
+        
         // Supabase形式の完全なデータを使用
         matchedSpots.push({
           id: matched.id,
           name: matched.name,
-          lat: matched.lat,
-          lng: matched.lng,
+          lat: finalLat,
+          lng: finalLng,
           category: matched.category,
           city: matched.city,
           season: matched.season,
