@@ -593,8 +593,37 @@ export async function POST(req: NextRequest) {
     const waypoints =
       matchedSpots && Array.isArray(matchedSpots)
         ? matchedSpots
-            .filter((s: any) => s.lat != null && s.lng != null)
-            .map((s: any) => ({ lat: s.lat, lng: s.lng }))
+            .filter((s: any) => {
+              // 座標の型と値の検証を強化
+              const isValid = 
+                s.lat != null && 
+                s.lng != null &&
+                typeof s.lat === "number" &&
+                typeof s.lng === "number" &&
+                !isNaN(s.lat) &&
+                !isNaN(s.lng) &&
+                s.lat >= -90 && s.lat <= 90 &&
+                s.lng >= -180 && s.lng <= 180;
+              
+              if (!isValid) {
+                console.warn(`[koyo-stay] Invalid coordinates for spot "${s.name}" (${s.id}): lat=${s.lat}, lng=${s.lng}`);
+              }
+              
+              return isValid;
+            })
+            .map((s: any) => {
+              // 座標を数値型に明示的に変換
+              const lat = Number(s.lat);
+              const lng = Number(s.lng);
+              
+              // 蔵王お釜のIDをチェック（デバッグ用）
+              const zawaoOkamaId = "b916a6f4-7225-42df-800a-a48f5f030da0";
+              if (s.id === zawaoOkamaId) {
+                console.log(`[koyo-stay] Zawao Okama waypoint: lat=${lat}, lng=${lng}, type: lat=${typeof lat}, lng=${typeof lng}`);
+              }
+              
+              return { lat, lng };
+            })
         : [];
 
     response.routeInfo = {
@@ -602,6 +631,15 @@ export async function POST(req: NextRequest) {
       waypoints,
       destination: KOYO_COORDINATES,
     };
+    
+    // デバッグログ：routeInfoの内容を確認
+    console.log("[koyo-stay] routeInfo constructed:", {
+      origin: response.routeInfo.origin,
+      destination: response.routeInfo.destination,
+      waypointsCount: response.routeInfo.waypoints.length,
+      waypoints: response.routeInfo.waypoints,
+      containsZawaoOkama: matchedSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
+    });
 
     return NextResponse.json(response);
   } catch (error: any) {

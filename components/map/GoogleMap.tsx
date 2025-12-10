@@ -311,30 +311,88 @@ export default function GoogleMap({ center, markers, spots, showRoute = false, k
       return;
     }
 
+    // 蔵王お釜のIDをチェック（デバッグ用）
+    const zawaoOkamaId = "b916a6f4-7225-42df-800a-a48f5f030da0";
+    const containsZawaoOkama = validSpots.some((s) => s.id === zawaoOkamaId);
+    
+    // waypointsの詳細検証（各座標の型と値を確認）
+    const waypointDetails = routeWaypoints.map((wp, index) => {
+      const spot = validSpots[index];
+      return {
+        index,
+        spotId: spot?.id || "unknown",
+        spotName: spot?.name || "unknown",
+        location: wp.location,
+        latType: typeof wp.location.lat,
+        lngType: typeof wp.location.lng,
+        latIsNaN: isNaN(wp.location.lat),
+        lngIsNaN: isNaN(wp.location.lng),
+        latValue: wp.location.lat,
+        lngValue: wp.location.lng,
+        isZawaoOkama: spot?.id === zawaoOkamaId,
+      };
+    });
+
     console.log("[GoogleMap] Requesting route:", {
       origin: routeOrigin,
       destination: routeDestination,
       waypointsCount: routeWaypoints.length,
       waypoints: routeWaypoints.map((wp) => wp.location),
+      containsZawaoOkama,
+      waypointDetails,
     });
 
+    // DirectionsServiceに渡すrequestオブジェクト
+    const request = {
+      origin: routeOrigin,
+      destination: routeDestination,
+      waypoints: routeWaypoints.length > 0 ? routeWaypoints : undefined,
+      travelMode: google.maps.TravelMode.DRIVING,
+    };
+
     directionsServiceRef.current.route(
-      {
-        origin: routeOrigin,
-        destination: routeDestination,
-        waypoints: routeWaypoints.length > 0 ? routeWaypoints : undefined,
-        travelMode: google.maps.TravelMode.DRIVING,
-      },
+      request,
       (result: any, status: any) => {
         if (status === google.maps.DirectionsStatus.OK && result) {
           directionsRendererRef.current.setDirections(result);
           lastRouteSpotsRef.current = currentRouteKey;
           console.log("[GoogleMap] Route drawn successfully");
         } else {
-          console.error("[GoogleMap] Directions API error:", status, {
-            origin: routeOrigin,
-            destination: routeDestination,
-            waypointsCount: routeWaypoints.length,
+          // ZERO_RESULTS時の詳細ログ
+          console.error("[GoogleMap] Directions API error:", status);
+          console.error("[GoogleMap] Full request object:", JSON.stringify(request, null, 2));
+          console.error("[GoogleMap] Request details:", {
+            origin: {
+              lat: request.origin.lat,
+              lng: request.origin.lng,
+              latType: typeof request.origin.lat,
+              lngType: typeof request.origin.lng,
+              latIsNaN: isNaN(request.origin.lat),
+              lngIsNaN: isNaN(request.origin.lng),
+            },
+            destination: {
+              lat: request.destination.lat,
+              lng: request.destination.lng,
+              latType: typeof request.destination.lat,
+              lngType: typeof request.destination.lng,
+              latIsNaN: isNaN(request.destination.lat),
+              lngIsNaN: isNaN(request.destination.lng),
+            },
+            waypointsCount: request.waypoints?.length || 0,
+            waypoints: request.waypoints?.map((wp, idx) => ({
+              index: idx,
+              location: wp.location,
+              latType: typeof wp.location.lat,
+              lngType: typeof wp.location.lng,
+              latIsNaN: isNaN(wp.location.lat),
+              lngIsNaN: isNaN(wp.location.lng),
+              latValue: wp.location.lat,
+              lngValue: wp.location.lng,
+              stopover: wp.stopover,
+            })),
+            travelMode: request.travelMode,
+            containsZawaoOkama,
+            waypointDetails,
           });
         }
       }
