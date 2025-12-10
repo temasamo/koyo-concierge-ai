@@ -27,11 +27,21 @@ export default function MapPage() {
       return;
     }
 
+    // デバッグ: 座標情報をログ出力
+    console.log("[MapPage] Opening Google Maps with routeInfo:", {
+      origin: routeInfo.origin,
+      destination: routeInfo.destination,
+      waypointsCount: routeInfo.waypoints.length,
+      waypoints: routeInfo.waypoints,
+    });
+
     const url = buildGoogleMapsUrl(
       routeInfo.origin,
       routeInfo.waypoints,
       routeInfo.destination
     );
+    
+    console.log("[MapPage] Generated Google Maps URL:", url);
     window.open(url, "_blank");
   };
 
