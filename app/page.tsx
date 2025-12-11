@@ -96,14 +96,16 @@ export default function Page() {
       const apiEndpoint = `/api/koyo/${mode}`;
 
       // ④ API コール
-      console.log("[page.tsx] Sending request with origin:", origin);
+      // リクエスト送信時に最新の origin を取得
+      const currentOrigin = useSpotStore.getState().origin;
+      console.log("[page.tsx] Sending request with origin:", currentOrigin);
       const res = await fetch(apiEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: latestMessages,
           userState: {
-            origin: origin,
+            origin: currentOrigin,
           },
         }),
       });
@@ -117,18 +119,22 @@ export default function Page() {
       // デバッグログ
       console.log("[page.tsx] API response:", data);
       console.log("[page.tsx] spots:", data.spots);
-      console.log("[page.tsx] origin:", data.origin);
+      console.log("[page.tsx] origin from API:", data.origin);
       console.log("[page.tsx] routeInfo:", data.routeInfo);
+      console.log("[page.tsx] current origin in store:", origin);
 
       // 🔽 origin の扱いを修正
       if (data.origin && data.origin.type !== null) {
         // Pre-Checkin で決まった origin を保持
+        console.log("[page.tsx] Setting origin (Pre-Checkin):", data.origin);
         setOrigin(data.origin);
-        console.log("[page.tsx] Keep origin (Pre-Checkin):", data.origin);
+        // 次のリクエストで正しい origin が送信されるように、少し待つ
+        await new Promise(resolve => setTimeout(resolve, 0));
+        console.log("[page.tsx] Origin set, new value:", useSpotStore.getState().origin);
       } else {
         // 通常 Before / Stay / After など → origin はクリア
+        console.log("[page.tsx] Clear origin (normal mode), data.origin:", data.origin);
         clearOrigin();
-        console.log("[page.tsx] Clear origin (normal mode)");
       }
 
       // 🔽 routeInfo の扱い
