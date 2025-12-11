@@ -501,6 +501,13 @@ export async function POST(req: NextRequest) {
     // 2️⃣ ユーザー状態（origin）を取得
     const userState = body.userState || {};
     const currentOrigin: OriginInfo = userState.origin || DEFAULT_ORIGIN;
+    
+    console.log("[koyo-before] Received userState:", {
+      userState,
+      currentOrigin,
+      originType: currentOrigin?.type,
+      originPref: currentOrigin?.pref,
+    });
 
     const hasOrigin =
       currentOrigin &&
@@ -508,6 +515,13 @@ export async function POST(req: NextRequest) {
       // pref-boundary の場合は lat/lng が null でも OK
       (currentOrigin.type === "pref-boundary" ||
         (currentOrigin.lat !== null && currentOrigin.lng !== null));
+
+    console.log("[koyo-before] Debug origin check:", {
+      currentOrigin,
+      hasOrigin,
+      type: currentOrigin?.type,
+      pref: currentOrigin?.pref,
+    });
 
     const isPreCheckinIntent = detectPreCheckinIntent(userMessage);
     const originSelection = parseOriginSelection(userMessage); // 「A〜G」などの返答

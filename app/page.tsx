@@ -96,6 +96,7 @@ export default function Page() {
       const apiEndpoint = `/api/koyo/${mode}`;
 
       // ④ API コール
+      console.log("[page.tsx] Sending request with origin:", origin);
       const res = await fetch(apiEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
