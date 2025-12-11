@@ -52,7 +52,8 @@ interface GoogleMapProps {
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
   origin?: OriginInfo; // Pre-Checkinモード用のorigin情報
   onRouteWarningChange?: (warning: string | null) => void; // ルート取得失敗時の警告メッセージを親に通知
-  onRouteListToggle?: (show: () => void) => void; // RouteList を表示する関数を親に渡す
+  showRouteList?: boolean; // RouteList の表示状態（親から制御）
+  onShowRouteListChange?: (show: boolean) => void; // RouteList の表示状態を変更する関数
 }
 
 export default function GoogleMap({
@@ -63,7 +64,8 @@ export default function GoogleMap({
   koyoOrigin,
   origin,
   onRouteWarningChange,
-  onRouteListToggle,
+  showRouteList: showRouteListProp,
+  onShowRouteListChange,
 }: GoogleMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -79,7 +81,6 @@ export default function GoogleMap({
     InfoWindow: any;
   } | null>(null);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
-  const [showRouteList, setShowRouteList] = useState(false);
   const [routeListData, setRouteListData] = useState<
     Array<{
       name: string;
@@ -88,7 +89,9 @@ export default function GoogleMap({
       city?: string | null;
     }>
   >([]);
-  const showRouteListFnRef = useRef<(() => void) | null>(null);
+  
+  // 親から制御される場合は prop を使用、そうでない場合は内部 state を使用
+  const showRouteList = showRouteListProp !== undefined ? showRouteListProp : false;
 
   // マップの初期化（一度だけ実行）
   useEffect(() => {
@@ -194,33 +197,19 @@ export default function GoogleMap({
     onRouteWarningChange?.(routeWarning);
   }, [routeWarning, onRouteWarningChange]);
 
-  // RouteList を表示する関数を作成（useCallback で安定化）
-  const handleShowRouteList = useCallback(() => {
-    console.log("[GoogleMap] Showing route list");
-    setShowRouteList(true);
-  }, []);
-
-  // RouteList を表示する関数を親に渡す
+  // ルート描画成功時に RouteList を自動表示（初回のみ）
+  const hasAutoShownRef = useRef(false);
   useEffect(() => {
-    if (onRouteListToggle && routeListData.length > 0) {
-      console.log("[GoogleMap] Setting routeList toggle function, routeListData.length:", routeListData.length);
-      // useRef に保存
-      showRouteListFnRef.current = handleShowRouteList;
-      // 次のイベントループで親に通知（レンダリング後に実行）
-      const timer = setTimeout(() => {
-        if (onRouteListToggle && showRouteListFnRef.current) {
-          onRouteListToggle(showRouteListFnRef.current);
-        }
-      }, 0);
-      return () => clearTimeout(timer);
-    } else {
-      console.log("[GoogleMap] Not setting routeList toggle function:", {
-        hasOnRouteListToggle: !!onRouteListToggle,
-        routeListDataLength: routeListData.length,
-      });
-      showRouteListFnRef.current = null;
+    if (routeListData.length > 0 && onShowRouteListChange && !hasAutoShownRef.current) {
+      console.log("[GoogleMap] Auto-showing route list, routeListData.length:", routeListData.length);
+      onShowRouteListChange(true);
+      hasAutoShownRef.current = true;
     }
-  }, [onRouteListToggle, routeListData.length, handleShowRouteList]);
+    // routeListData が空になったらリセット
+    if (routeListData.length === 0) {
+      hasAutoShownRef.current = false;
+    }
+  }, [routeListData.length, onShowRouteListChange]);
 
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {
@@ -474,7 +463,7 @@ export default function GoogleMap({
         directionsRendererRef.current.setDirections(result);
         lastRouteSpotsRef.current = currentRouteKey;
         setRouteWarning(null);
-        setShowRouteList(true); // ルート描画成功時に自動表示
+        // ルート描画成功時は useEffect で自動表示されるため、ここでは何もしない
         console.log("[GoogleMap] Route drawn successfully (DRIVING)");
         return;
       }
@@ -522,7 +511,7 @@ export default function GoogleMap({
           "🚧 このルートには冬季閉鎖区間が含まれている可能性があります。正確なルートは Google マップでご確認ください。";
         setRouteWarning(warning);
         directionsRendererRef.current?.setDirections({ routes: [] as any });
-        setShowRouteList(true); // ZERO_RESULTS 時も RouteList を表示
+        // ZERO_RESULTS 時も RouteList を表示（useEffect で自動表示される）
         logFailure();
         return;
       }
@@ -530,7 +519,7 @@ export default function GoogleMap({
       // その他のエラー
       setRouteWarning("ルートを取得できませんでした。Google マップで代替ルートをご確認ください。");
       directionsRendererRef.current?.setDirections({ routes: [] as any });
-      setShowRouteList(true); // エラー時も RouteList を表示
+      // エラー時も RouteList を表示（useEffect で自動表示される）
       logFailure();
     });
   }, [showRoute, koyoOrigin, origin, center]);
@@ -761,7 +750,11 @@ export default function GoogleMap({
       <RouteList
         route={routeListData}
         visible={showRouteList}
-        onClose={() => setShowRouteList(false)}
+        onClose={() => {
+          if (onShowRouteListChange) {
+            onShowRouteListChange(false);
+          }
+        }}
         hasWarning={!!routeWarning}
         warningMessage={routeWarning || undefined}
       />

@@ -13,10 +13,7 @@ export default function MapPage() {
   const origin = useSpotStore((state) => state.origin);
   const routeInfo = useSpotStore((state) => state.routeInfo);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
-  const [showRouteListFn, setShowRouteListFn] = useState<(() => void) | null>(null);
-
-  // デバッグ用
-  console.log("[MapPage] showRouteListFn:", showRouteListFn ? "exists" : "null");
+  const [showRouteList, setShowRouteList] = useState(false);
 
   // 古窯（上山温泉）の公式座標
   const center = KOYO_COORDINATES;
@@ -75,11 +72,7 @@ export default function MapPage() {
         <div className="flex items-center gap-2">
           {routeInfo && routeInfo.waypoints.length > 0 && (
             <button
-              onClick={() => {
-                if (showRouteListFn) {
-                  showRouteListFn();
-                }
-              }}
+              onClick={() => setShowRouteList(true)}
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
             >
               <svg
@@ -130,7 +123,8 @@ export default function MapPage() {
           koyoOrigin={center}
           origin={origin}
           onRouteWarningChange={setRouteWarning}
-          onRouteListToggle={setShowRouteListFn}
+          showRouteList={showRouteList}
+          onShowRouteListChange={setShowRouteList}
         />
       </div>
 
