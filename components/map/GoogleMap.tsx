@@ -196,7 +196,20 @@ export default function GoogleMap({
   // RouteList を表示する関数を親に渡す
   useEffect(() => {
     if (onRouteListToggle && routeListData.length > 0) {
-      onRouteListToggle(() => setShowRouteList(true));
+      console.log("[GoogleMap] Setting routeList toggle function, routeListData.length:", routeListData.length);
+      // レンダリング後に実行するため、setTimeout で遅延させる
+      const timer = setTimeout(() => {
+        onRouteListToggle(() => {
+          console.log("[GoogleMap] Showing route list");
+          setShowRouteList(true);
+        });
+      }, 0);
+      return () => clearTimeout(timer);
+    } else {
+      console.log("[GoogleMap] Not setting routeList toggle function:", {
+        hasOnRouteListToggle: !!onRouteListToggle,
+        routeListDataLength: routeListData.length,
+      });
     }
   }, [onRouteListToggle, routeListData.length]);
 
@@ -445,6 +458,7 @@ export default function GoogleMap({
     directionsServiceRef.current.route(request, (result: any, status: any) => {
       // routeOrder を生成（成功・失敗問わず表示するため）
       const routeOrder = buildRouteOrder();
+      console.log("[GoogleMap] Setting routeListData, routeOrder.length:", routeOrder.length);
       setRouteListData(routeOrder);
 
       if (status === google.maps.DirectionsStatus.OK && result) {

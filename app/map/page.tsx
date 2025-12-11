@@ -15,6 +15,9 @@ export default function MapPage() {
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
   const [showRouteListFn, setShowRouteListFn] = useState<(() => void) | null>(null);
 
+  // デバッグ用
+  console.log("[MapPage] showRouteListFn:", showRouteListFn ? "exists" : "null");
+
   // 古窯（上山温泉）の公式座標
   const center = KOYO_COORDINATES;
 
