@@ -88,6 +88,7 @@ export default function GoogleMap({
       city?: string | null;
     }>
   >([]);
+  const showRouteListFnRef = useRef<(() => void) | null>(null);
 
   // マップの初期化（一度だけ実行）
   useEffect(() => {
@@ -193,16 +194,23 @@ export default function GoogleMap({
     onRouteWarningChange?.(routeWarning);
   }, [routeWarning, onRouteWarningChange]);
 
+  // RouteList を表示する関数を作成（useCallback で安定化）
+  const handleShowRouteList = useCallback(() => {
+    console.log("[GoogleMap] Showing route list");
+    setShowRouteList(true);
+  }, []);
+
   // RouteList を表示する関数を親に渡す
   useEffect(() => {
     if (onRouteListToggle && routeListData.length > 0) {
       console.log("[GoogleMap] Setting routeList toggle function, routeListData.length:", routeListData.length);
-      // レンダリング後に実行するため、setTimeout で遅延させる
+      // useRef に保存
+      showRouteListFnRef.current = handleShowRouteList;
+      // 次のイベントループで親に通知（レンダリング後に実行）
       const timer = setTimeout(() => {
-        onRouteListToggle(() => {
-          console.log("[GoogleMap] Showing route list");
-          setShowRouteList(true);
-        });
+        if (onRouteListToggle && showRouteListFnRef.current) {
+          onRouteListToggle(showRouteListFnRef.current);
+        }
       }, 0);
       return () => clearTimeout(timer);
     } else {
@@ -210,8 +218,9 @@ export default function GoogleMap({
         hasOnRouteListToggle: !!onRouteListToggle,
         routeListDataLength: routeListData.length,
       });
+      showRouteListFnRef.current = null;
     }
-  }, [onRouteListToggle, routeListData.length]);
+  }, [onRouteListToggle, routeListData.length, handleShowRouteList]);
 
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {

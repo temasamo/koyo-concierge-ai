@@ -73,9 +73,13 @@ export default function MapPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {showRouteListFn && (
+          {routeInfo && routeInfo.waypoints.length > 0 && (
             <button
-              onClick={showRouteListFn}
+              onClick={() => {
+                if (showRouteListFn) {
+                  showRouteListFn();
+                }
+              }}
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
             >
               <svg
