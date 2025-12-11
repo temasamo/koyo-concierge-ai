@@ -780,6 +780,19 @@ G. その他（自由入力）
 
     const reply = completion.choices[0]?.message?.content ?? "";
 
+    // AIの返答から origin 情報を抽出
+    let aiOrigin: OriginInfo | undefined;
+    try {
+      const cleanedReply = reply.replace(/```json\s*/g, '').replace(/```\s*/g, '').replace(/```[\s\S]*?```/g, '');
+      const jsonResponse = JSON.parse(cleanedReply);
+      if (jsonResponse.origin && jsonResponse.origin.type) {
+        aiOrigin = jsonResponse.origin as OriginInfo;
+        console.log("[koyo-before] Extracted origin from AI reply:", aiOrigin);
+      }
+    } catch (e) {
+      // JSON解析に失敗した場合は無視
+    }
+
     // plan配列を抽出
     const planArray = await extractPlanFromReply(reply);
 
@@ -850,10 +863,30 @@ G. その他（自由入力）
       response.spots = matchedSpots;
     }
 
-    // すべてのレスポンスに origin を含める（通常モードは null 値）
-    response.origin = DEFAULT_ORIGIN;
+    // すべてのレスポンスに origin を含める
+    // AIの返答に origin が含まれている場合はそれを使用、そうでなければ DEFAULT_ORIGIN
+    response.origin = aiOrigin || DEFAULT_ORIGIN;
 
-    // routeInfo を構築（通常モード：originは古窯固定）
+    // routeInfo を構築
+    // AIの返答に origin 情報が含まれている場合はそれを使用、そうでなければ古窯固定
+    let routeOrigin: { lat: number; lng: number } = KOYO_COORDINATES;
+    
+    if (aiOrigin && aiOrigin.type === "pref-boundary" && aiOrigin.pref) {
+      // 県境の場合は県境座標を使用
+      const prefBoundary = getPrefBoundary(aiOrigin.pref as PrefectureKey);
+      routeOrigin = prefBoundary;
+      console.log("[koyo-before] Using pref-boundary origin:", routeOrigin);
+    } else if (aiOrigin && (aiOrigin.type === "fixed" || aiOrigin.type === "current") && aiOrigin.lat && aiOrigin.lng) {
+      // 固定地点または現在地の場合はその座標を使用
+      routeOrigin = {
+        lat: aiOrigin.lat,
+        lng: aiOrigin.lng,
+      };
+      console.log("[koyo-before] Using fixed/current origin:", routeOrigin);
+    } else {
+      console.log("[koyo-before] Using default Koyo origin");
+    }
+
     const waypoints =
       matchedSpots && Array.isArray(matchedSpots)
         ? matchedSpots
@@ -891,7 +924,7 @@ G. その他（自由入力）
         : [];
 
     response.routeInfo = {
-      origin: KOYO_COORDINATES,
+      origin: routeOrigin,
       waypoints,
       destination: KOYO_COORDINATES,
     };
