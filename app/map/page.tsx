@@ -122,6 +122,7 @@ export default function MapPage() {
           showRoute={true}
           koyoOrigin={center}
           origin={origin}
+          routeInfo={routeInfo}
           onRouteWarningChange={setRouteWarning}
           showRouteList={showRouteList}
           onShowRouteListChange={setShowRouteList}

@@ -36,6 +36,9 @@ export default function Page() {
   const origin = useSpotStore((s) => s.origin);
   const setOrigin = useSpotStore((s) => s.setOrigin);
   const clearOrigin = useSpotStore((s) => s.clearOrigin);
+  const destination = useSpotStore((s) => s.destination);
+  const setDestination = useSpotStore((s) => s.setDestination);
+  const clearDestination = useSpotStore((s) => s.clearDestination);
   const setRouteInfo = useSpotStore((s) => s.setRouteInfo);
   const clearRouteInfo = useSpotStore((s) => s.clearRouteInfo);
 
@@ -60,6 +63,7 @@ export default function Page() {
         console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
         clearSpots();
         clearOrigin();
+        clearDestination();
         clearRouteInfo();
         prevModeRef.current = mode;
     } else if (isReturningFromMap) {
@@ -70,7 +74,7 @@ export default function Page() {
     
     // パス名を更新
     prevPathnameRef.current = pathname;
-  }, [mode, pathname, clearSpots, clearOrigin, resetToInitial, spots.length]);
+  }, [mode, pathname, clearSpots, clearOrigin, clearDestination, resetToInitial, spots.length]);
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
@@ -96,9 +100,11 @@ export default function Page() {
       const apiEndpoint = `/api/koyo/${mode}`;
 
       // ④ API コール
-      // リクエスト送信時に最新の origin を取得
+      // リクエスト送信時に最新の origin と destination を取得
       const currentOrigin = useSpotStore.getState().origin;
+      const currentDestination = useSpotStore.getState().destination;
       console.log("[page.tsx] Sending request with origin:", currentOrigin);
+      console.log("[page.tsx] Sending request with destination:", currentDestination);
       const res = await fetch(apiEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -106,6 +112,7 @@ export default function Page() {
           messages: latestMessages,
           userState: {
             origin: currentOrigin,
+            destination: mode === "after" ? currentDestination : undefined,
           },
         }),
       });
@@ -120,8 +127,10 @@ export default function Page() {
       console.log("[page.tsx] API response:", data);
       console.log("[page.tsx] spots:", data.spots);
       console.log("[page.tsx] origin from API:", data.origin);
+      console.log("[page.tsx] destination from API:", data.destination);
       console.log("[page.tsx] routeInfo:", data.routeInfo);
       console.log("[page.tsx] current origin in store:", origin);
+      console.log("[page.tsx] current destination in store:", destination);
 
       // 🔽 origin の扱いを修正
       if (data.origin && data.origin.type !== null) {
@@ -135,6 +144,23 @@ export default function Page() {
         // 通常 Before / Stay / After など → origin はクリア
         console.log("[page.tsx] Clear origin (normal mode), data.origin:", data.origin);
         clearOrigin();
+      }
+
+      // 🔽 destination の扱い（Afterモードのみ）
+      if (mode === "after") {
+        if (data.destination && data.destination.type !== null) {
+          // After で決まった destination を保持
+          console.log("[page.tsx] Setting destination (After):", data.destination);
+          setDestination(data.destination);
+          await new Promise(resolve => setTimeout(resolve, 0));
+          console.log("[page.tsx] Destination set, new value:", useSpotStore.getState().destination);
+        } else {
+          // destination が未設定の場合、クリアしない（既存の値を保持）
+          console.log("[page.tsx] No destination in response, keeping current:", destination);
+        }
+      } else {
+        // After 以外のモードでは destination をクリア
+        clearDestination();
       }
 
       // 🔽 routeInfo の扱い

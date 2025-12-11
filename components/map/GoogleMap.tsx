@@ -51,6 +51,7 @@ interface GoogleMapProps {
   showRoute?: boolean; // ルート表示の有効/無効（デフォルト: false）
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
   origin?: OriginInfo; // Pre-Checkinモード用のorigin情報
+  routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number }>; destination: { lat: number; lng: number } } | null; // ルート情報（APIから取得）
   onRouteWarningChange?: (warning: string | null) => void; // ルート取得失敗時の警告メッセージを親に通知
   showRouteList?: boolean; // RouteList の表示状態（親から制御）
   onShowRouteListChange?: (show: boolean) => void; // RouteList の表示状態を変更する関数
@@ -63,6 +64,7 @@ export default function GoogleMap({
   showRoute = false,
   koyoOrigin,
   origin,
+  routeInfo,
   onRouteWarningChange,
   showRouteList: showRouteListProp,
   onShowRouteListChange,
@@ -299,9 +301,18 @@ export default function GoogleMap({
         routeDestination
       );
     } else if (koyoOrigin) {
-      // 通常モード（Stay/After/通常Before）：古窯 → スポット → 古窯
+      // 通常モード（Stay/After/通常Before）
       routeOrigin = koyoOrigin;
-      routeDestination = koyoOrigin; // Phase 1仕様：常に古窯をdestinationに
+      // routeInfo が存在する場合は destination を使用、なければ古窯固定
+      if (routeInfo && routeInfo.destination) {
+        routeDestination = routeInfo.destination;
+        console.log(
+          "[GoogleMap] Using routeInfo.destination:",
+          routeDestination
+        );
+      } else {
+        routeDestination = koyoOrigin; // デフォルト：古窯固定
+      }
       routeWaypoints = validSpots.map((s) => ({
         name: s.name,
         location: { lat: s.lat, lng: s.lng },
@@ -310,7 +321,8 @@ export default function GoogleMap({
         city: s.city,
       }));
       console.log(
-        "[GoogleMap] Normal mode: Koyo -> spots -> Koyo",
+        "[GoogleMap] Normal mode: Koyo -> spots ->",
+        routeDestination === koyoOrigin ? "Koyo" : "Destination",
         routeOrigin,
         "=>",
         routeDestination,
@@ -412,10 +424,71 @@ export default function GoogleMap({
       }
     };
 
+    // destination の名前を取得する関数
+    const getDestinationName = () => {
+      // routeInfo が存在し、destination が古窯と異なる場合
+      if (routeInfo && routeInfo.destination) {
+        const dest = routeInfo.destination;
+        const koyoLat = koyoOrigin?.lat || center.lat;
+        const koyoLng = koyoOrigin?.lng || center.lng;
+        
+        // 古窯の座標と一致するかチェック（小数点以下6桁で比較）
+        const isKoyo = 
+          Math.abs(dest.lat - koyoLat) < 0.000001 &&
+          Math.abs(dest.lng - koyoLng) < 0.000001;
+        
+        if (isKoyo) {
+          return "到着：日本の宿 古窯";
+        }
+        
+        // 県境の座標と一致するかチェック
+        const prefBoundaries = [
+          { pref: "miyagi" as PrefectureKey, name: "宮城県境" },
+          { pref: "fukushima" as PrefectureKey, name: "福島県境" },
+          { pref: "akita" as PrefectureKey, name: "秋田県境" },
+          { pref: "niigata" as PrefectureKey, name: "新潟県境" },
+        ];
+        
+        for (const { pref, name } of prefBoundaries) {
+          const boundary = getPrefBoundary(pref);
+          if (
+            Math.abs(dest.lat - boundary.lat) < 0.000001 &&
+            Math.abs(dest.lng - boundary.lng) < 0.000001
+          ) {
+            return `到着：${name}`;
+          }
+        }
+        
+        // 固定地点（A〜E）の座標と一致するかチェック
+        const fixedPoints = [
+          { name: "山形駅", lat: 38.248662864893596, lng: 140.327528420525 },
+          { name: "山形空港", lat: 38.4125, lng: 140.3711 },
+          { name: "かみのやま温泉駅", lat: 38.15233921920549, lng: 140.27857922264496 },
+          { name: "山形蔵王IC", lat: 38.24564526672003, lng: 140.38118390915645 },
+          { name: "かみのやま温泉IC", lat: 38.12676684858146, lng: 140.2560067803147 },
+        ];
+        
+        for (const point of fixedPoints) {
+          if (
+            Math.abs(dest.lat - point.lat) < 0.000001 &&
+            Math.abs(dest.lng - point.lng) < 0.000001
+          ) {
+            return `到着：${point.name}`;
+          }
+        }
+        
+        // 一致しない場合は座標を表示
+        return `到着：目的地`;
+      }
+      
+      // routeInfo が存在しない場合は古窯固定
+      return "到着：日本の宿 古窯";
+    };
+
     // routeOrder を生成する関数
     const buildRouteOrder = () => {
       const originName = getOriginName();
-      const destinationName = "到着：日本の宿 古窯";
+      const destinationName = getDestinationName();
 
       const routeOrder = [
         {

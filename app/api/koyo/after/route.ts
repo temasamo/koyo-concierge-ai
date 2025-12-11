@@ -5,6 +5,11 @@ import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
+import { resolveOriginFromFreeInput } from "../before/_utils/originResolver";
+import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
+import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
+import { getPrefBoundary } from "@/store/prefBoundaries";
+import type { OriginInfo } from "@/store/spots";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -114,8 +119,25 @@ async function getSystemPrompt(): Promise<string> {
 
 【ヒアリング（重要）】
 ユーザーから情報が不足している場合、丁寧に短く確認する。
-例：
-- 「本日はどちら方面へお帰りになりますか？」
+
+**帰路方向の確認（必須）**
+まず、以下の選択肢を提示してください：
+A. 山形駅
+B. 山形空港
+C. かみのやま温泉駅
+D. 山形蔵王IC（高速）
+E. かみのやま温泉IC（高速）
+F. その他
+
+ユーザーが「F. その他」を選択した場合のみ、以下の県境選択を提示してください：
+① 宮城
+② 福島
+③ 秋田
+④ 新潟
+
+例：「①」「宮城」「仙台方面」など簡単でOKです。
+
+**その他のヒアリング例**
 - 「途中でお食事をとりたいご予定はございますか？」
 - 「立ち寄りたいジャンル（カフェ・景色・温泉など）はございますか？」
 
@@ -439,32 +461,67 @@ function cleanReplyMessage(reply: string): string {
  * - query: 単発問い合わせ
  */
 type AfterRequestBody =
-  | { messages: ChatCompletionMessageParam[] }
-  | { query: string };
+  | { messages: ChatCompletionMessageParam[]; userState?: { destination?: OriginInfo } }
+  | { query: string; userState?: { destination?: OriginInfo } };
+
+// デフォルトの destination 値
+const DEFAULT_DESTINATION: OriginInfo = {
+  type: null,
+  pref: null,
+  lat: null,
+  lng: null,
+  name: null,
+};
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as AfterRequestBody;
 
+    // 1️⃣ ユーザーメッセージを取得
     let userMessages: ChatCompletionMessageParam[];
+    let userMessage: string;
 
     if ("messages" in body && Array.isArray(body.messages)) {
       // フロントの履歴を採用
       userMessages = body.messages;
+      const lastUserMessage = userMessages.filter((m) => m.role === "user").pop();
+      userMessage =
+        typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
     } else if ("query" in body && typeof body.query === "string") {
       // 単発問い合わせモード（MVP向け）
-      userMessages = [
-        {
-          role: "user",
-          content: body.query,
-        },
-      ];
+      userMessage = body.query;
+      userMessages = [{ role: "user", content: body.query }];
     } else {
       return NextResponse.json(
         { error: "messages または query が必要です。" },
         { status: 400 }
       );
     }
+
+    // 2️⃣ ユーザー状態（destination）を取得
+    const userState = body.userState || {};
+    let currentDestination: OriginInfo = userState.destination || DEFAULT_DESTINATION;
+
+    console.log("[koyo-after] Received userState:", {
+      userState,
+      currentDestination,
+      destinationType: currentDestination?.type,
+      destinationPref: currentDestination?.pref,
+    });
+
+    let hasDestination =
+      currentDestination &&
+      currentDestination.type !== null &&
+      // pref-boundary の場合は lat/lng が null でも OK
+      (currentDestination.type === "pref-boundary" ||
+        (currentDestination.lat !== null && currentDestination.lng !== null));
+
+    console.log("[koyo-after] Debug destination check:", {
+      currentDestination,
+      hasDestination,
+      type: currentDestination?.type,
+      pref: currentDestination?.pref,
+    });
 
     // Supabaseからスポット一覧を取得してシステムプロンプトを生成
     const systemPrompt = await getSystemPrompt();
@@ -486,6 +543,157 @@ export async function POST(req: NextRequest) {
 
     // デバッグ: AIの応答をログ出力
     console.log("[koyo-after] AI reply (first 500 chars):", reply.substring(0, 500));
+
+    // AIの返答から destination 情報を抽出
+    let aiDestination: OriginInfo | undefined;
+    try {
+      const cleanedReply = reply.replace(/```json\s*/g, '').replace(/```\s*/g, '').replace(/```[\s\S]*?```/g, '');
+      const jsonResponse = JSON.parse(cleanedReply);
+      if (jsonResponse.destination && jsonResponse.destination.type) {
+        aiDestination = jsonResponse.destination as OriginInfo;
+        console.log("[koyo-after] Extracted destination from AI reply:", aiDestination);
+      }
+    } catch (e) {
+      // JSON解析に失敗した場合は無視
+    }
+
+    // --------------------------------------------------
+    // A. すでに destination が決まっている場合
+    //    → プラン生成モードとみなす
+    // --------------------------------------------------
+    if (hasDestination) {
+      // destination が既に決まっている場合は、そのままプラン生成に進む
+      console.log("[koyo-after] Destination already set, proceeding with plan generation", {
+        currentDestination,
+        type: currentDestination?.type,
+        pref: currentDestination?.pref,
+      });
+    } else {
+      // --------------------------------------------------
+      // B. destination が未設定の場合：選択を促す
+      // --------------------------------------------------
+      // まず「①」「②」「③」「④」の県境選択をチェック（優先）
+      const prefSelectionMap: Record<string, PrefectureKey> = {
+        "①": "miyagi",
+        "1": "miyagi",
+        "②": "fukushima",
+        "2": "fukushima",
+        "③": "akita",
+        "3": "akita",
+        "④": "niigata",
+        "4": "niigata",
+      };
+
+      let selectedPref: PrefectureKey | undefined;
+      for (const [key, pref] of Object.entries(prefSelectionMap)) {
+        if (userMessage.includes(key)) {
+          selectedPref = pref;
+          break;
+        }
+      }
+
+      // 県境が選択された場合（数字記号で選択）
+      if (selectedPref) {
+        console.log("[koyo-after] Selected pref-boundary destination (from number):", selectedPref);
+        currentDestination = {
+          type: "pref-boundary",
+          pref: selectedPref,
+          lat: null,
+          lng: null,
+          name: null,
+        } as OriginInfo;
+        hasDestination = true;
+        console.log("[koyo-after] Pref-boundary destination set, proceeding with plan generation");
+      } else {
+        // 県境が選択されていない場合、県名から県境を推定
+        const resolution = resolveOriginFromFreeInput(userMessage);
+        if (resolution.type === "resolved") {
+          // 県名から県境が特定できた場合
+          console.log("[koyo-after] Resolved pref-boundary from free input:", resolution.prefecture);
+          currentDestination = {
+            type: "pref-boundary",
+            pref: resolution.prefecture,
+            lat: null,
+            lng: null,
+            name: null,
+          } as OriginInfo;
+          hasDestination = true;
+          console.log("[koyo-after] Pref-boundary destination set, proceeding with plan generation");
+        } else {
+          // 県名が特定できない場合、「A〜F」の選択を解析
+          const originSelection = parseOriginSelection(userMessage);
+          
+          // 「F」または「その他」が選択された場合
+          const isOtherSelected = 
+            userMessage.toUpperCase().includes("F") ||
+            userMessage.includes("その他") ||
+            userMessage.includes("そのた");
+
+          if (originSelection && originSelection !== null && !("useCurrentLocation" in originSelection)) {
+            // A〜E が選択された場合：固定地点を destination に設定
+            console.log("[koyo-after] Selected fixed destination:", originSelection);
+            currentDestination = {
+              type: "fixed",
+              pref: null,
+              lat: originSelection.lat,
+              lng: originSelection.lng,
+              name: originSelection.name,
+            } as OriginInfo;
+            hasDestination = true;
+            console.log("[koyo-after] Fixed destination set, proceeding with plan generation");
+          } else if (isOtherSelected) {
+            // F（その他）が選択された場合：県境選択を促す
+            return NextResponse.json({
+              mode: "after-destination-select",
+              reply: `
+お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！
+どちら方面へお帰りになりますか？
+
+① 宮城
+② 福島
+③ 秋田
+④ 新潟
+
+例：「①」「宮城」「仙台方面」など簡単でOKです！
+`.trim(),
+              destination: DEFAULT_DESTINATION,
+            });
+          } else {
+            // A〜F が選択されていない場合：最初の選択肢を提示
+            return NextResponse.json({
+              mode: "after-destination-select",
+              reply: `
+お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！
+まず、どちら方面へお帰りになりますか？
+
+A. 山形駅
+B. 山形空港
+C. かみのやま温泉駅
+D. 山形蔵王IC（高速）
+E. かみのやま温泉IC（高速）
+F. その他
+
+例：「A」「山形駅」「F」など簡単でOKです！
+`.trim(),
+              destination: DEFAULT_DESTINATION,
+            });
+          }
+        }
+      }
+    }
+
+    // destination が設定された場合、再度 hasDestination をチェック
+    if (!hasDestination && currentDestination && currentDestination.type !== null) {
+      hasDestination = 
+        currentDestination.type === "pref-boundary" ||
+        (currentDestination.lat !== null && currentDestination.lng !== null);
+      if (hasDestination) {
+        console.log("[koyo-after] Destination was set during processing, updating hasDestination:", {
+          currentDestination,
+          hasDestination,
+        });
+      }
+    }
 
     // plan配列を抽出
     let planArray = await extractPlanFromReply(reply);
@@ -568,7 +776,46 @@ export async function POST(req: NextRequest) {
       response.spots = matchedSpots;
     }
 
-    // routeInfo を構築（Afterモード：originは古窯固定、destinationも古窯固定（Phase 3））
+    // routeInfo を構築（Afterモード：originは古窯固定、destinationは県境または古窯）
+    // destination の決定ロジック
+    let routeDestination: { lat: number; lng: number } = KOYO_COORDINATES;
+    let finalDestination: OriginInfo = DEFAULT_DESTINATION;
+
+    // デバッグ: destination決定前の状態を確認
+    console.log("[koyo-after] Before routeInfo construction:", {
+      hasDestination,
+      currentDestination,
+      currentDestinationType: currentDestination?.type,
+      currentDestinationPref: currentDestination?.pref,
+      aiDestination,
+      aiDestinationType: aiDestination?.type,
+    });
+
+    // 優先順位: 1. currentDestination (userState or newly set) > 2. aiDestination (AI返答) > 3. 古窯固定
+    if (hasDestination && currentDestination && currentDestination.type === "pref-boundary" && currentDestination.pref) {
+      // userState に pref-boundary が設定されている場合
+      const prefBoundary = getPrefBoundary(currentDestination.pref as PrefectureKey);
+      routeDestination = prefBoundary;
+      finalDestination = currentDestination;
+      console.log("[koyo-after] Using pref-boundary destination from userState:", routeDestination);
+    } else if (aiDestination && aiDestination.type === "pref-boundary" && aiDestination.pref) {
+      // AIの返答に pref-boundary が含まれている場合
+      const prefBoundary = getPrefBoundary(aiDestination.pref as PrefectureKey);
+      routeDestination = prefBoundary;
+      finalDestination = aiDestination;
+      console.log("[koyo-after] Using pref-boundary destination from AI reply:", routeDestination);
+    } else if (hasDestination && currentDestination && (currentDestination.type === "fixed" || currentDestination.type === "current") && currentDestination.lat && currentDestination.lng) {
+      // userState に固定地点または現在地が設定されている場合
+      routeDestination = {
+        lat: currentDestination.lat,
+        lng: currentDestination.lng,
+      };
+      finalDestination = currentDestination;
+      console.log("[koyo-after] Using fixed/current destination from userState:", routeDestination);
+    } else {
+      console.log("[koyo-after] Using default Koyo destination");
+    }
+
     const waypoints =
       matchedSpots && Array.isArray(matchedSpots)
         ? matchedSpots
@@ -608,8 +855,28 @@ export async function POST(req: NextRequest) {
     response.routeInfo = {
       origin: KOYO_COORDINATES,
       waypoints,
-      destination: KOYO_COORDINATES,
+      destination: routeDestination,
     };
+
+    // destination を返す（フロントエンドで保持するため）
+    // hasDestination が true の場合、currentDestination を返す
+    console.log("[koyo-after] Final destination check:", {
+      hasDestination,
+      currentDestination,
+      currentDestinationType: currentDestination?.type,
+      finalDestination,
+      finalDestinationType: finalDestination?.type,
+    });
+    
+    if (hasDestination && currentDestination && currentDestination.type !== null) {
+      response.destination = currentDestination;
+      console.log("[koyo-after] Returning destination in response:", currentDestination);
+    } else if (finalDestination && finalDestination.type !== null) {
+      response.destination = finalDestination;
+      console.log("[koyo-after] Returning finalDestination in response:", finalDestination);
+    } else {
+      console.log("[koyo-after] No destination to return");
+    }
     
     // デバッグログ：routeInfoの内容を確認
     console.log("[koyo-after] routeInfo constructed:", {

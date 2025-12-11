@@ -46,12 +46,23 @@ type SpotStore = {
   origin: OriginInfo;
   setOrigin: (origin: OriginInfo) => void;
   clearOrigin: () => void;
+  destination: OriginInfo;
+  setDestination: (destination: OriginInfo) => void;
+  clearDestination: () => void;
   routeInfo: RouteInfo | null;
   setRouteInfo: (routeInfo: RouteInfo | null) => void;
   clearRouteInfo: () => void;
 };
 
 const DEFAULT_ORIGIN: OriginInfo = {
+  type: null,
+  pref: null,
+  lat: null,
+  lng: null,
+  name: null,
+};
+
+const DEFAULT_DESTINATION: OriginInfo = {
   type: null,
   pref: null,
   lat: null,
@@ -66,6 +77,9 @@ export const useSpotStore = create<SpotStore>((set) => ({
   origin: DEFAULT_ORIGIN,
   setOrigin: (origin) => set({ origin }),
   clearOrigin: () => set({ origin: DEFAULT_ORIGIN }),
+  destination: DEFAULT_DESTINATION,
+  setDestination: (destination) => set({ destination }),
+  clearDestination: () => set({ destination: DEFAULT_DESTINATION }),
   routeInfo: null,
   setRouteInfo: (routeInfo) => set({ routeInfo }),
   clearRouteInfo: () => set({ routeInfo: null }),
