@@ -418,10 +418,18 @@ export default function GoogleMap({
     };
 
     // DirectionsServiceに渡すrequestオブジェクト（DRIVING固定）
+    // Directions API は { location, stopover } のみを受け取るため、name, category, city を除外
+    const directionsWaypoints = routeWaypoints.length > 0
+      ? routeWaypoints.map((wp) => ({
+          location: wp.location,
+          stopover: wp.stopover,
+        }))
+      : undefined;
+
     const request = {
       origin: routeOrigin,
       destination: routeDestination,
-      waypoints: routeWaypoints.length > 0 ? routeWaypoints : undefined,
+      waypoints: directionsWaypoints,
       travelMode: google.maps.TravelMode.DRIVING,
     };
 
