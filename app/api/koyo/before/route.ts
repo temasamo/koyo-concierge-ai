@@ -505,8 +505,9 @@ export async function POST(req: NextRequest) {
     const hasOrigin =
       currentOrigin &&
       currentOrigin.type !== null &&
-      currentOrigin.lat !== null &&
-      currentOrigin.lng !== null;
+      // pref-boundary の場合は lat/lng が null でも OK
+      (currentOrigin.type === "pref-boundary" ||
+        (currentOrigin.lat !== null && currentOrigin.lng !== null));
 
     const isPreCheckinIntent = detectPreCheckinIntent(userMessage);
     const originSelection = parseOriginSelection(userMessage); // 「A〜G」などの返答
