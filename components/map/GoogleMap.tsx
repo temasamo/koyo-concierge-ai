@@ -52,6 +52,7 @@ interface GoogleMapProps {
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
   origin?: OriginInfo; // Pre-Checkinモード用のorigin情報
   onRouteWarningChange?: (warning: string | null) => void; // ルート取得失敗時の警告メッセージを親に通知
+  onRouteListToggle?: (show: () => void) => void; // RouteList を表示する関数を親に渡す
 }
 
 export default function GoogleMap({
@@ -62,6 +63,7 @@ export default function GoogleMap({
   koyoOrigin,
   origin,
   onRouteWarningChange,
+  onRouteListToggle,
 }: GoogleMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -190,6 +192,13 @@ export default function GoogleMap({
   useEffect(() => {
     onRouteWarningChange?.(routeWarning);
   }, [routeWarning, onRouteWarningChange]);
+
+  // RouteList を表示する関数を親に渡す
+  useEffect(() => {
+    if (onRouteListToggle && routeListData.length > 0) {
+      onRouteListToggle(() => setShowRouteList(true));
+    }
+  }, [onRouteListToggle, routeListData.length]);
 
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {

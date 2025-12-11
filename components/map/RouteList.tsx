@@ -32,7 +32,7 @@ export default function RouteList({
       style={{ maxHeight: "50%", overflowY: "auto" }}
     >
       <div className="flex justify-between items-center mb-3">
-        <h2 className="text-lg font-semibold">📍 本日のルート</h2>
+        <h2 className="text-lg font-semibold text-gray-900">📍 本日のルート</h2>
         <button
           onClick={onClose}
           className="text-gray-500 text-xl hover:text-gray-700 transition-colors"
