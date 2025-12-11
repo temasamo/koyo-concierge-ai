@@ -3,6 +3,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { loadGoogleMaps } from "./MapLoader";
 import type { Spot, OriginInfo } from "@/store/spots";
 import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
+import { getDefaultEntryPoint } from "@/app/api/koyo/before/_constants/prefEntryPoints";
+import RouteList from "./RouteList";
 
 function buildKoyoInfoWindowContent() {
   return `
@@ -75,6 +77,15 @@ export default function GoogleMap({
     InfoWindow: any;
   } | null>(null);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
+  const [showRouteList, setShowRouteList] = useState(false);
+  const [routeListData, setRouteListData] = useState<
+    Array<{
+      name: string;
+      location: { lat: number; lng: number };
+      category?: string | null;
+      city?: string | null;
+    }>
+  >([]);
 
   // マップの初期化（一度だけ実行）
   useEffect(() => {
@@ -235,8 +246,11 @@ export default function GoogleMap({
       routeOrigin = prefBoundary;
       routeDestination = koyoOrigin || center;
       routeWaypoints = validSpots.map((s) => ({
+        name: s.name,
         location: { lat: s.lat, lng: s.lng },
         stopover: true,
+        category: s.category,
+        city: s.city,
       }));
       console.log(
         "[GoogleMap] Pre-Checkin (pref-boundary): origin -> spots -> Koyo",
@@ -252,8 +266,11 @@ export default function GoogleMap({
       };
       routeDestination = koyoOrigin || center;
       routeWaypoints = validSpots.map((s) => ({
+        name: s.name,
         location: { lat: s.lat, lng: s.lng },
         stopover: true,
+        category: s.category,
+        city: s.city,
       }));
       console.log(
         "[GoogleMap] Pre-Checkin (fixed/current): origin -> spots -> Koyo",
@@ -266,8 +283,11 @@ export default function GoogleMap({
       routeOrigin = koyoOrigin;
       routeDestination = koyoOrigin; // Phase 1仕様：常に古窯をdestinationに
       routeWaypoints = validSpots.map((s) => ({
+        name: s.name,
         location: { lat: s.lat, lng: s.lng },
         stopover: true,
+        category: s.category,
+        city: s.city,
       }));
       console.log(
         "[GoogleMap] Normal mode: Koyo -> spots -> Koyo",
@@ -360,6 +380,43 @@ export default function GoogleMap({
       waypointDetails,
     });
 
+    // origin 名を取得する関数
+    const getOriginName = (): string => {
+      if (hasPrefBoundary && origin?.pref) {
+        const entryPoint = getDefaultEntryPoint(origin.pref as PrefectureKey);
+        return `出発：${entryPoint.name}`;
+      } else if (hasFixedOrigin || hasCurrentOrigin) {
+        return origin?.name ? `出発：${origin.name}` : "出発：出発地点";
+      } else {
+        return "出発：日本の宿 古窯";
+      }
+    };
+
+    // routeOrder を生成する関数
+    const buildRouteOrder = () => {
+      const originName = getOriginName();
+      const destinationName = "到着：日本の宿 古窯";
+
+      const routeOrder = [
+        {
+          name: originName,
+          location: routeOrigin,
+        },
+        ...routeWaypoints.map((wp) => ({
+          name: wp.name || "スポット",
+          location: wp.location,
+          category: wp.category,
+          city: wp.city,
+        })),
+        {
+          name: destinationName,
+          location: routeDestination,
+        },
+      ];
+
+      return routeOrder;
+    };
+
     // DirectionsServiceに渡すrequestオブジェクト（DRIVING固定）
     const request = {
       origin: routeOrigin,
@@ -369,10 +426,15 @@ export default function GoogleMap({
     };
 
     directionsServiceRef.current.route(request, (result: any, status: any) => {
+      // routeOrder を生成（成功・失敗問わず表示するため）
+      const routeOrder = buildRouteOrder();
+      setRouteListData(routeOrder);
+
       if (status === google.maps.DirectionsStatus.OK && result) {
         directionsRendererRef.current.setDirections(result);
         lastRouteSpotsRef.current = currentRouteKey;
         setRouteWarning(null);
+        setShowRouteList(true); // ルート描画成功時に自動表示
         console.log("[GoogleMap] Route drawn successfully (DRIVING)");
         return;
       }
@@ -420,6 +482,7 @@ export default function GoogleMap({
           "🚧 このルートには冬季閉鎖区間が含まれている可能性があります。正確なルートは Google マップでご確認ください。";
         setRouteWarning(warning);
         directionsRendererRef.current?.setDirections({ routes: [] as any });
+        setShowRouteList(true); // ZERO_RESULTS 時も RouteList を表示
         logFailure();
         return;
       }
@@ -427,6 +490,7 @@ export default function GoogleMap({
       // その他のエラー
       setRouteWarning("ルートを取得できませんでした。Google マップで代替ルートをご確認ください。");
       directionsRendererRef.current?.setDirections({ routes: [] as any });
+      setShowRouteList(true); // エラー時も RouteList を表示
       logFailure();
     });
   }, [showRoute, koyoOrigin, origin, center]);
@@ -654,6 +718,13 @@ export default function GoogleMap({
           <div className="text-gray-500 text-sm">スポットがありません</div>
         </div>
       )}
+      <RouteList
+        route={routeListData}
+        visible={showRouteList}
+        onClose={() => setShowRouteList(false)}
+        hasWarning={!!routeWarning}
+        warningMessage={routeWarning || undefined}
+      />
     </div>
   );
 }
