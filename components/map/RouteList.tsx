@@ -20,14 +20,24 @@ export default function RouteList({
 }: Props) {
   if (!visible) return null;
 
-  // 番号を漢数字に変換（①②③...）
-  const getNumberBadge = (index: number): string => {
+  // 番号を表示用ラベルに変換（S → ① → ② → ... → G）
+  const getDisplayLabel = (leg: RouteLegInfo, index: number, total: number): string => {
+    // 最初のleg（index 0）は出発地なので「S」
+    if (index === 0) {
+      return "S";
+    }
+    // 最後のlegは到着地なので「G」
+    if (index === total - 1) {
+      return "G";
+    }
+    // 中間のlegは①②③...
     const numbers = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
-    if (index >= 0 && index < numbers.length) {
-      return numbers[index];
+    const waypointIndex = index - 1; // 出発地を除いたインデックス（0から始まる）
+    if (waypointIndex >= 0 && waypointIndex < numbers.length) {
+      return numbers[waypointIndex];
     }
     // 10以上の場合も数字で表示
-    return `${index + 1}`;
+    return `${waypointIndex + 1}`;
   };
 
   return (
@@ -66,7 +76,7 @@ export default function RouteList({
             >
               {/* 番号バッジ */}
               <div className="mt-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">
-                {getNumberBadge(leg.index)}
+                {getDisplayLabel(leg, leg.index, routeLegs.length)}
               </div>
 
               {/* 本文 */}

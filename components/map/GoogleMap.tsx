@@ -5,8 +5,89 @@ import type { Spot, OriginInfo } from "@/store/spots";
 import { useSpotStore } from "@/store/spots";
 import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
 import { getDefaultEntryPoint } from "@/app/api/koyo/before/_constants/prefEntryPoints";
-import type { RouteLegInfo } from "@/types/route";
+import type { RouteLegInfo, RoutePoint, KoyoMode } from "@/types/route";
+import { KOYO_COORDINATES } from "@/constants/koyo";
 import RouteList from "./RouteList";
+
+// モード判定関数
+function detectMode(
+  origin: OriginInfo | undefined,
+  destination: { lat: number; lng: number } | undefined,
+  koyoOrigin: { lat: number; lng: number } | undefined
+): KoyoMode {
+  const KOYO_LAT = KOYO_COORDINATES.lat;
+  const KOYO_LNG = KOYO_COORDINATES.lng;
+
+  // ■ Before（Pre-Checkin）
+  // type が設定されている場合（県境モードや入力モード）は Before
+  if (origin && origin.type !== null) {
+    return "before";
+  }
+
+  // ■ After（帰宅）
+  // destination が古窯ではない場合
+  if (destination && koyoOrigin) {
+    const isDestinationKoyo =
+      Math.abs(destination.lat - KOYO_LAT) < 0.0001 &&
+      Math.abs(destination.lng - KOYO_LNG) < 0.0001;
+
+    if (!isDestinationKoyo) {
+      return "after";
+    }
+  }
+
+  // ■ Stay（宿泊中）
+  return "stay";
+}
+
+// ラベル割り当て関数
+function assignLabel(
+  routePoints: RoutePoint[],
+  mode: KoyoMode
+): RoutePoint[] {
+  return routePoints.map((p, index) => {
+    // --- origin ---
+    if (p.pointType === "origin") {
+      // Stayモードでoriginとdestinationが同じ位置の場合は「S / G」
+      if (mode === "stay") {
+        const isDestinationSame = routePoints.some(
+          (dp) =>
+            dp.pointType === "destination" &&
+            Math.abs(dp.location.lat - p.location.lat) < 0.0001 &&
+            Math.abs(dp.location.lng - p.location.lng) < 0.0001
+        );
+        if (isDestinationSame) {
+          return { ...p, label: "S / G" };
+        }
+      }
+      return { ...p, label: "S" };
+    }
+
+    // --- destination ---
+    if (p.pointType === "destination") {
+      // Stayモードでoriginとdestinationが同じ位置の場合は、originで既に「S / G」を設定済み
+      // この場合はdestinationのマーカーは描画しない（後で処理）
+      if (mode === "stay") {
+        const isOriginSame = routePoints.some(
+          (op) =>
+            op.pointType === "origin" &&
+            Math.abs(op.location.lat - p.location.lat) < 0.0001 &&
+            Math.abs(op.location.lng - p.location.lng) < 0.0001
+        );
+        if (isOriginSame) {
+          // destinationは描画しない（originで「S / G」として表示済み）
+          return { ...p, label: "" };
+        }
+      }
+      return { ...p, label: "G" };
+    }
+
+    // --- waypoints ---
+    // originの次から1番、2番、3番...と振る
+    const wpIndex = index; // index=1が最初のwaypointなので、そのまま使用
+    return { ...p, label: String(wpIndex) };
+  });
+}
 
 function buildKoyoInfoWindowContent() {
   return `
@@ -86,6 +167,7 @@ export default function GoogleMap({
     InfoWindow: any;
   } | null>(null);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
+  const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
   
   // 親から制御される場合は prop を使用、そうでない場合は内部 state を使用
   const showRouteList = showRouteListProp !== undefined ? showRouteListProp : false;
@@ -218,6 +300,10 @@ export default function GoogleMap({
       return;
     }
 
+    // デバッグ: originの状態を確認
+    console.log("[GoogleMap] drawRoute called - origin:", origin);
+    console.log("[GoogleMap] drawRoute called - routeInfo:", routeInfo);
+
     // null安全性チェック：有効な座標を持つスポットのみをフィルタリング
     const validSpots = routeSpots.filter(
       (s) => s.lat != null && s.lng != null
@@ -256,8 +342,40 @@ export default function GoogleMap({
       origin.type === "current" &&
       origin.lat != null &&
       origin.lng != null;
-
-    if (hasPrefBoundary) {
+    
+    console.log("[GoogleMap] Origin check:", {
+      hasPrefBoundary,
+      hasFixedOrigin,
+      hasCurrentOrigin,
+      originType: origin?.type,
+      originPref: origin?.pref,
+      origin,
+      routeInfoOrigin: routeInfo?.origin,
+    });
+    
+    // routeInfo.originが存在し、originが設定されていない場合、routeInfo.originを優先する
+    // Beforeモードで県境が設定されている場合、routeInfo.originに正しい座標が含まれている
+    if (routeInfo && routeInfo.origin && !hasPrefBoundary && !hasFixedOrigin && !hasCurrentOrigin) {
+      console.log("[GoogleMap] Using routeInfo.origin as routeOrigin (origin not set)");
+      routeOrigin = routeInfo.origin;
+      routeDestination = routeInfo.destination || koyoOrigin || center;
+      // routeInfo.waypointsとvalidSpotsをマージ
+      routeWaypoints = routeInfo.waypoints.map((wp, idx) => {
+        const spot = validSpots[idx];
+        return {
+          name: spot?.name || "",
+          location: wp,
+          stopover: true,
+          category: spot?.category || null,
+          city: spot?.city || null,
+        };
+      });
+      console.log("[GoogleMap] Using routeInfo for route:", {
+        origin: routeOrigin,
+        destination: routeDestination,
+        waypointsCount: routeWaypoints.length,
+      });
+    } else if (hasPrefBoundary) {
       // 県境 → AIスポット → 古窯
       const prefBoundary = getPrefBoundary(origin!.pref as PrefectureKey);
       routeOrigin = prefBoundary;
@@ -275,6 +393,8 @@ export default function GoogleMap({
         "=>",
         routeDestination
       );
+      console.log("[GoogleMap] routeOrigin (pref-boundary):", routeOrigin);
+      console.log("[GoogleMap] origin info:", origin);
     } else if (hasFixedOrigin || hasCurrentOrigin) {
       // A〜E / 現在地 → AIスポット → 古窯
       routeOrigin = {
@@ -654,6 +774,48 @@ export default function GoogleMap({
       travelMode: google.maps.TravelMode.DRIVING,
     };
 
+    // routePoints を生成（Directions API呼び出し前に生成）
+    const mode = detectMode(origin, routeDestination, koyoOrigin);
+    console.log("[GoogleMap] Generating routePoints - mode:", mode, "routeOrigin:", routeOrigin);
+    const generatedRoutePoints: RoutePoint[] = [
+      {
+        location: routeOrigin,
+        pointType: "origin",
+        label: "", // assignLabelで設定
+        name: getOriginName().replace("出発：", ""),
+      },
+      ...routeWaypoints.map((wp, idx) => {
+        const spot = validSpots[idx];
+        return {
+          location: wp.location,
+          pointType: "waypoint" as const,
+          label: "", // assignLabelで設定
+          name: spot?.name || wp.name || `スポット${idx + 1}`,
+          spotId: spot?.id || null,
+          category: spot?.category || wp.category || null,
+          city: spot?.city || wp.city || null,
+        };
+      }),
+      {
+        location: routeDestination,
+        pointType: "destination",
+        label: "", // assignLabelで設定
+        name: getDestinationName().replace("到着：", ""),
+      },
+    ];
+    
+    // ラベルを割り当て
+    const labeledRoutePoints = assignLabel(generatedRoutePoints, mode);
+    console.log("[GoogleMap] Generated routePoints:", labeledRoutePoints.length, "points");
+    console.log("[GoogleMap] Mode:", mode);
+    console.log("[GoogleMap] routePoints details:", JSON.stringify(labeledRoutePoints.map(p => ({
+      pointType: p.pointType,
+      label: p.label,
+      name: p.name,
+      location: p.location
+    })), null, 2));
+    setRoutePoints(labeledRoutePoints);
+
     directionsServiceRef.current.route(request, (result: any, status: any) => {
 
       if (status === google.maps.DirectionsStatus.OK && result) {
@@ -724,6 +886,8 @@ export default function GoogleMap({
         console.log("[GoogleMap] Generated routeLegs for ZERO_RESULTS:", routeLegs.length, "legs");
         setRouteLegs(routeLegs);
         
+        // routePoints は既に生成済み（Directions API呼び出し前に生成）
+        
         // ZERO_RESULTS 時も RouteList を表示（useEffect で自動表示される）
         logFailure();
         return;
@@ -738,10 +902,12 @@ export default function GoogleMap({
       console.log("[GoogleMap] Generated routeLegs for error:", routeLegs.length, "legs");
       setRouteLegs(routeLegs);
       
+      // routePoints は既に生成済み（Directions API呼び出し前に生成）
+      
       // エラー時も RouteList を表示（useEffect で自動表示される）
       logFailure();
     });
-  }, [showRoute, koyoOrigin, origin, center]);
+  }, [showRoute, koyoOrigin, origin, center, routeInfo]);
 
   // マップの中心を更新
   useEffect(() => {
@@ -764,7 +930,14 @@ export default function GoogleMap({
     }
   }, [origin, isLoading, showRoute, spots, drawRoute]);
 
-  // マーカーの更新
+  // routeInfoが更新されたらルートを再描画
+  useEffect(() => {
+    if (!isLoading && showRoute && spots && spots.length >= 1) {
+      drawRoute(spots);
+    }
+  }, [routeInfo, isLoading, showRoute, spots, drawRoute]);
+
+  // マーカーの更新（routePointsベース）
   useEffect(() => {
     if (!mapInstanceRef.current || isLoading || !googleMapsLibs) {
       console.log("[GoogleMap] Skipping marker update:", {
@@ -775,7 +948,13 @@ export default function GoogleMap({
       return;
     }
 
-    console.log("[GoogleMap] Updating markers:", markers.length);
+    // routePointsが空の場合は何もしない
+    if (routePoints.length === 0) {
+      console.log("[GoogleMap] No routePoints to display");
+      return;
+    }
+
+    console.log("[GoogleMap] Updating markers from routePoints:", routePoints.length);
     const map = mapInstanceRef.current;
     const { Marker, InfoWindow } = googleMapsLibs;
     
@@ -785,7 +964,7 @@ export default function GoogleMap({
     }
 
     // --- Marker Reset ---
-    // Task 1: 新しいスポットがセットされたとき、古いマーカーを必ず全て削除
+    // 新しいroutePointsがセットされたとき、古いマーカーを必ず全て削除
     if (markersRef.current.length > 0) {
       markersRef.current.forEach((m) => m.setMap(null));
       markersRef.current = [];
@@ -806,87 +985,77 @@ export default function GoogleMap({
     const newMarkers: any[] = [];
     let skippedCount = 0;
 
-    // まず古窯のマーカーを追加（固定）
-    if (koyoOrigin) {
-      const koyoMarker = new Marker({
-        position: koyoOrigin,
+    // routePointsからマーカーを生成
+    routePoints.forEach((point) => {
+      // labelが空の場合は描画しない（StayモードでS/Gが同じ位置の場合、destinationは描画しない）
+      if (!point.label || point.label === "") {
+        return;
+      }
+
+      // マーカーを作成（ラベル付き）
+      const marker = new Marker({
+        position: point.location,
         map,
-        title: "古窯",
-        icon: {
-          url: "http://maps.google.com/mapfiles/ms/icons/red-dot.png", // 赤いマーカーで区別
+        title: point.name || point.label,
+        label: {
+          text: point.label,
+          color: "#ffffff",
+          fontSize: "14px",
+          fontWeight: "bold",
         },
       });
 
-      // 古窯のInfoWindow（固定データ）
-      const koyoHtml = buildKoyoInfoWindowContent();
+      // InfoWindowの生成
+      let infoWindow: any = null;
+      let infoWindowContent = "";
 
-      const koyoInfoWindow = new InfoWindow({
-        content: koyoHtml,
-      });
+      // 古窯の場合（originまたはdestinationが古窯）
+      const isKoyo = 
+        Math.abs(point.location.lat - KOYO_COORDINATES.lat) < 0.0001 &&
+        Math.abs(point.location.lng - KOYO_COORDINATES.lng) < 0.0001;
 
-      koyoMarker.addListener("click", () => {
-        infoWindowsRef.current.forEach((iw) => iw.close());
-        koyoInfoWindow.open({
-          map: mapInstanceRef.current,
-          anchor: koyoMarker,
+      if (isKoyo) {
+        infoWindowContent = buildKoyoInfoWindowContent();
+        infoWindow = new InfoWindow({
+          content: infoWindowContent,
         });
-      });
+      } else if (point.spotId) {
+        // スポットの場合（waypoint）
+        // スポット情報を取得
+        const spot = markers.find((s) => s.id === point.spotId);
+        if (spot) {
+          const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
+          infoWindowContent = `
+            <div style="
+              max-width: 220px;
+              padding: 8px;
+              font-family: sans-serif;
+            ">
+              <h3 style="margin:0 0 6px; font-size:14px; font-weight:bold;">
+                ${spot.name || "スポット名不明"}
+              </h3>
 
-      newMarkers.push(koyoMarker);
-      infoWindowsRef.current.push(koyoInfoWindow);
-      bounds.extend(koyoOrigin);
-      console.log("[GoogleMap] Added Koyo marker (origin)");
-    }
+              <img 
+                src="${imageUrl}"
+                style="width:100%; border-radius:6px; margin-bottom:6px;"
+                onerror="this.src='/noimage.png'"
+              />
 
-    // AIスポットのマーカーを追加
-    if (markers.length > 0) {
-      markers.forEach((spot, index) => {
-        // Supabaseのlat/lngのみを使用（必須チェック）
-        if (spot.lat == null || spot.lng == null) {
-          console.warn(`[GoogleMap] Skipping spot "${spot.name}" (index ${index}) - missing coordinates`);
-          skippedCount++;
-          return;
+              ${spot.category ? `<p style="margin:0 0 4px; font-size:12px; color:#2563eb;">カテゴリ: ${spot.category}</p>` : ""}
+              ${spot.city ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">場所: ${spot.city}</p>` : ""}
+              ${spot.drive_minutes != null ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">${spot.drive_time}</p>` : ""}
+              ${spot.stay_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">滞在時間: ${spot.stay_time}</p>` : ""}
+              ${spot.season ? `<p style="margin:0; font-size:12px; color:#666;">シーズン: ${spot.season}</p>` : ""}
+            </div>
+          `;
+          infoWindow = new InfoWindow({
+            content: infoWindowContent,
+          });
         }
+      }
 
-        // マーカーを作成（Supabaseの座標のみ使用）
-        const marker = new Marker({
-          position: { lat: spot.lat, lng: spot.lng },
-          map,
-          title: spot.name,
-        });
-
-        // Task 3: InfoWindowのスタイル安定化
-        // 画像URLを取得（photoUrlまたはimageUrlの両方に対応）
-        const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
-        
-        const html = `
-          <div style="
-            max-width: 220px;
-            padding: 8px;
-            font-family: sans-serif;
-          ">
-            <h3 style="margin:0 0 6px; font-size:14px; font-weight:bold;">
-              ${spot.name || "スポット名不明"}
-            </h3>
-
-            <img 
-              src="${imageUrl}"
-              style="width:100%; border-radius:6px; margin-bottom:6px;"
-              onerror="this.src='/noimage.png'"
-            />
-
-            ${spot.category ? `<p style="margin:0 0 4px; font-size:12px; color:#2563eb;">カテゴリ: ${spot.category}</p>` : ""}
-            ${spot.city ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">場所: ${spot.city}</p>` : ""}
-            ${spot.drive_minutes != null ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">${spot.drive_time}</p>` : ""}
-            ${spot.stay_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">滞在時間: ${spot.stay_time}</p>` : ""}
-            ${spot.season ? `<p style="margin:0; font-size:12px; color:#666;">シーズン: ${spot.season}</p>` : ""}
-          </div>
-        `;
-
-        const infoWindow = new InfoWindow({
-          content: html,
-        });
-
+      // クリックイベントを追加
+      if (infoWindow) {
         marker.addListener("click", () => {
           // 他の情報ウィンドウを閉じる
           infoWindowsRef.current.forEach((iw) => iw.close());
@@ -895,58 +1064,46 @@ export default function GoogleMap({
             anchor: marker,
           });
         });
-
-        newMarkers.push(marker);
         infoWindowsRef.current.push(infoWindow);
-        bounds.extend({ lat: spot.lat, lng: spot.lng });
-      });
-
-      // マーカー参照を更新（Task 1: 新しいマーカーを作る際は markersRef.current.push）
-      markersRef.current = newMarkers;
-
-      // デバッグログ：表示されたマーカー数を確認
-      console.log(`[GoogleMap] Created ${newMarkers.length} markers (${skippedCount} skipped due to missing coordinates)`);
-      
-      if (newMarkers.length === 0) {
-        console.error("[GoogleMap] No valid markers created! All spots had missing coordinates.");
-        // マーカーがない場合は中心を設定
-        map.setCenter(center);
-        map.setZoom(12);
-        return;
       }
 
-      // mapRef.current が存在してから実行
-      if (!mapInstanceRef.current) {
-        console.error("[GoogleMap] mapInstanceRef.current is null");
-        return;
-      }
+      newMarkers.push(marker);
+      bounds.extend(point.location);
+    });
 
-      // マーカー数で挙動を分岐（古窯マーカーを含む）
-      const totalMarkerCount = newMarkers.length;
-      if (totalMarkerCount === 1) {
-        // 古窯のみ → zoom: 14 あたり（自然）
-        mapInstanceRef.current.setCenter(bounds.getCenter());
-        mapInstanceRef.current.setZoom(14);
-        console.log("[Map] 古窯のみのためズーム固定で表示");
-      } else if (totalMarkerCount > 1) {
-        // 古窯 + AIスポット → bounds.fit()
-        mapInstanceRef.current.fitBounds(bounds, 80);
-        console.log("[Map] 古窯 + AIスポットのため bounds.fit で調整");
-      }
-    } else {
-      // AIスポットがない場合でも、古窯マーカーがあれば表示
-      if (koyoOrigin && newMarkers.length > 0) {
-        mapInstanceRef.current.setCenter(koyoOrigin);
-        mapInstanceRef.current.setZoom(14);
-        console.log("[GoogleMap] Only Koyo marker displayed");
-      } else {
-        // マーカーがない場合は中心を設定
-        console.log("[GoogleMap] No markers to display, centering on default location");
-        map.setCenter(center);
-        map.setZoom(12);
-      }
+    // マーカー参照を更新
+    markersRef.current = newMarkers;
+
+    // デバッグログ：表示されたマーカー数を確認
+    console.log(`[GoogleMap] Created ${newMarkers.length} markers from routePoints (${skippedCount} skipped)`);
+    
+    if (newMarkers.length === 0) {
+      console.warn("[GoogleMap] No valid markers created from routePoints");
+      // マーカーがない場合は中心を設定
+      map.setCenter(center);
+      map.setZoom(12);
+      return;
     }
-  }, [markers, isLoading, googleMapsLibs, center, koyoOrigin]); // すべての依存関係を明示
+
+    // mapRef.current が存在してから実行
+    if (!mapInstanceRef.current) {
+      console.error("[GoogleMap] mapInstanceRef.current is null");
+      return;
+    }
+
+    // マーカー数で挙動を分岐
+    const totalMarkerCount = newMarkers.length;
+    if (totalMarkerCount === 1) {
+      // マーカーが1つのみ → zoom: 14
+      mapInstanceRef.current.setCenter(bounds.getCenter());
+      mapInstanceRef.current.setZoom(14);
+      console.log("[Map] マーカー1つのためズーム固定で表示");
+    } else if (totalMarkerCount > 1) {
+      // 複数マーカー → bounds.fit()
+      mapInstanceRef.current.fitBounds(bounds, 80);
+      console.log("[Map] 複数マーカーのため bounds.fit で調整");
+    }
+  }, [routePoints, isLoading, googleMapsLibs, center, markers]); // routePointsが更新されたら再描画
 
   return (
     <div className="w-full h-full relative" style={{ minHeight: '400px' }}>

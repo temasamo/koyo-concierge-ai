@@ -12,3 +12,15 @@ export type RouteLegInfo = {
   city?: string | null;        // スポットの市区町村
 };
 
+export type RoutePoint = {
+  location: { lat: number; lng: number };
+  pointType: "origin" | "waypoint" | "destination";
+  label: string; // "S" | "G" | "1" | "2" | ... | "S / G"
+  name?: string; // スポット名や地名
+  spotId?: string | null; // スポットID（waypointの場合）
+  category?: string | null;
+  city?: string | null;
+};
+
+export type KoyoMode = "before" | "stay" | "after";
+
