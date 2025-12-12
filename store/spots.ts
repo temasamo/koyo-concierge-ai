@@ -1,5 +1,6 @@
 // store/spots.ts
 import { create } from "zustand";
+import type { RouteLegInfo } from "@/types/route";
 
 // /api/spots/search のレスポンス形式に合わせたSpot型
 export type Spot = {
@@ -52,6 +53,9 @@ type SpotStore = {
   routeInfo: RouteInfo | null;
   setRouteInfo: (routeInfo: RouteInfo | null) => void;
   clearRouteInfo: () => void;
+  routeLegs: RouteLegInfo[];
+  setRouteLegs: (routeLegs: RouteLegInfo[]) => void;
+  clearRouteLegs: () => void;
 };
 
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -83,5 +87,8 @@ export const useSpotStore = create<SpotStore>((set) => ({
   routeInfo: null,
   setRouteInfo: (routeInfo) => set({ routeInfo }),
   clearRouteInfo: () => set({ routeInfo: null }),
+  routeLegs: [],
+  setRouteLegs: (routeLegs) => set({ routeLegs }),
+  clearRouteLegs: () => set({ routeLegs: [] }),
 }));
 

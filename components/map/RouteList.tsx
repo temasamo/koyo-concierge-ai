@@ -1,16 +1,10 @@
 "use client";
 
 import React from "react";
-
-type RouteItem = {
-  name: string;
-  location: { lat: number; lng: number };
-  category?: string | null;
-  city?: string | null;
-};
+import type { RouteLegInfo } from "@/types/route";
 
 type Props = {
-  route: RouteItem[];
+  routeLegs: RouteLegInfo[];
   visible: boolean;
   onClose: () => void;
   hasWarning?: boolean;
@@ -18,13 +12,23 @@ type Props = {
 };
 
 export default function RouteList({
-  route,
+  routeLegs,
   visible,
   onClose,
   hasWarning = false,
   warningMessage,
 }: Props) {
   if (!visible) return null;
+
+  // 番号を漢数字に変換（①②③...）
+  const getNumberBadge = (index: number): string => {
+    const numbers = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+    if (index >= 0 && index < numbers.length) {
+      return numbers[index];
+    }
+    // 10以上の場合も数字で表示
+    return `${index + 1}`;
+  };
 
   return (
     <div
@@ -51,33 +55,58 @@ export default function RouteList({
         </div>
       )}
 
-      {route.length === 0 ? (
+      {routeLegs.length === 0 ? (
         <p className="text-gray-600 text-sm">ルートが見つかりません。</p>
       ) : (
-        <ul className="space-y-2">
-          {route.map((r, idx) => (
-            <li
-              key={idx}
-              className="p-3 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors"
+        <div className="space-y-3">
+          {routeLegs.map((leg) => (
+            <div
+              key={leg.index}
+              className="flex gap-3 border-t border-gray-100 pt-3 first:border-t-0 first:pt-0"
             >
-              <div className="flex items-start">
-                <span className="font-bold text-blue-600 mr-2 min-w-[24px]">
-                  {idx + 1}.
-                </span>
-                <div className="flex-1">
-                  <div className="font-medium text-gray-900">{r.name}</div>
-                  {(r.category || r.city) && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      {r.category && <span>{r.category}</span>}
-                      {r.category && r.city && <span> / </span>}
-                      {r.city && <span>{r.city}</span>}
-                    </div>
-                  )}
-                </div>
+              {/* 番号バッジ */}
+              <div className="mt-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">
+                {getNumberBadge(leg.index)}
               </div>
-            </li>
+
+              {/* 本文 */}
+              <div className="flex-1 text-xs">
+                <div className="font-semibold text-gray-900">
+                  {leg.index === 0 ? `出発：${leg.fromName}` : leg.toName}
+                </div>
+
+                {/* カテゴリ・市区町村 */}
+                {(leg.category || leg.city) && (
+                  <div className="mt-0.5 text-[11px] text-gray-500">
+                    {leg.category && <span>{leg.category}</span>}
+                    {leg.category && leg.city && <span> / </span>}
+                    {leg.city && <span>{leg.city}</span>}
+                  </div>
+                )}
+
+                {/* 距離・所要時間 */}
+                {(leg.distanceText || leg.durationText) && (
+                  <div className="mt-1 text-[11px] text-gray-600">
+                    {leg.distanceText && (
+                      <>
+                        距離：{leg.distanceText}
+                        {leg.durationText && " / "}
+                      </>
+                    )}
+                    {leg.durationText && <>所要時間：{leg.durationText}</>}
+                  </div>
+                )}
+
+                {/* 滞在時間（スポットに紐づく場合のみ） */}
+                {leg.stayTimeText && (
+                  <div className="mt-0.5 text-[11px] text-gray-600">
+                    滞在時間：{leg.stayTimeText}
+                  </div>
+                )}
+              </div>
+            </div>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   );

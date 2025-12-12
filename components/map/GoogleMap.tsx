@@ -2,8 +2,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { loadGoogleMaps } from "./MapLoader";
 import type { Spot, OriginInfo } from "@/store/spots";
+import { useSpotStore } from "@/store/spots";
 import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
 import { getDefaultEntryPoint } from "@/app/api/koyo/before/_constants/prefEntryPoints";
+import type { RouteLegInfo } from "@/types/route";
 import RouteList from "./RouteList";
 
 function buildKoyoInfoWindowContent() {
@@ -69,6 +71,7 @@ export default function GoogleMap({
   showRouteList: showRouteListProp,
   onShowRouteListChange,
 }: GoogleMapProps) {
+  const { routeLegs, setRouteLegs } = useSpotStore();
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -83,14 +86,6 @@ export default function GoogleMap({
     InfoWindow: any;
   } | null>(null);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
-  const [routeListData, setRouteListData] = useState<
-    Array<{
-      name: string;
-      location: { lat: number; lng: number };
-      category?: string | null;
-      city?: string | null;
-    }>
-  >([]);
   
   // 親から制御される場合は prop を使用、そうでない場合は内部 state を使用
   const showRouteList = showRouteListProp !== undefined ? showRouteListProp : false;
@@ -202,16 +197,16 @@ export default function GoogleMap({
   // ルート描画成功時に RouteList を自動表示（初回のみ）
   const hasAutoShownRef = useRef(false);
   useEffect(() => {
-    if (routeListData.length > 0 && onShowRouteListChange && !hasAutoShownRef.current) {
-      console.log("[GoogleMap] Auto-showing route list, routeListData.length:", routeListData.length);
+    if (routeLegs.length > 0 && onShowRouteListChange && !hasAutoShownRef.current) {
+      console.log("[GoogleMap] Auto-showing route list, routeLegs.length:", routeLegs.length);
       onShowRouteListChange(true);
       hasAutoShownRef.current = true;
     }
-    // routeListData が空になったらリセット
-    if (routeListData.length === 0) {
+    // routeLegs が空になったらリセット
+    if (routeLegs.length === 0) {
       hasAutoShownRef.current = false;
     }
-  }, [routeListData.length, onShowRouteListChange]);
+  }, [routeLegs.length, onShowRouteListChange]);
 
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {
@@ -485,29 +480,162 @@ export default function GoogleMap({
       return "到着：日本の宿 古窯";
     };
 
-    // routeOrder を生成する関数
-    const buildRouteOrder = () => {
+    // routeLegs を生成する関数
+    const buildRouteLegs = (legs: any[] | null): RouteLegInfo[] => {
       const originName = getOriginName();
       const destinationName = getDestinationName();
 
-      const routeOrder = [
-        {
-          name: originName,
-          location: routeOrigin,
-        },
-        ...routeWaypoints.map((wp) => ({
-          name: wp.name || "スポット",
-          location: wp.location,
-          category: wp.category,
-          city: wp.city,
-        })),
-        {
-          name: destinationName,
-          location: routeDestination,
-        },
-      ];
+      // legs がない場合（ZERO_RESULTS など）は、スポット情報から生成
+      if (!legs || legs.length === 0) {
+        const routeLegs: RouteLegInfo[] = [];
+        
+        // 最初に出発地を追加
+        const firstFromName = originName.replace("出発：", "");
+        routeLegs.push({
+          index: 0,
+          fromName: firstFromName,
+          toName: firstFromName, // 表示用にtoNameにも同じ値を設定
+          distanceText: "",
+          durationText: "",
+          stayTimeText: null,
+          spotId: null,
+          category: null,
+          city: null,
+        });
+        
+        // 最初の leg: origin → 最初のスポット
+        if (validSpots.length > 0) {
+          const firstSpot = validSpots[0];
+          routeLegs.push({
+            index: 1,
+            fromName: originName.replace("出発：", ""),
+            toName: firstSpot.name,
+            distanceText: "",
+            durationText: "",
+            stayTimeText: firstSpot.stay_time || null,
+            spotId: firstSpot.id,
+            category: firstSpot.category,
+            city: firstSpot.city,
+          });
+        }
 
-      return routeOrder;
+        // 中間の legs: スポット間
+        for (let i = 1; i < validSpots.length; i++) {
+          const prevSpot = validSpots[i - 1];
+          const currentSpot = validSpots[i];
+          routeLegs.push({
+            index: i + 1,
+            fromName: prevSpot.name,
+            toName: currentSpot.name,
+            distanceText: "",
+            durationText: "",
+            stayTimeText: currentSpot.stay_time || null,
+            spotId: currentSpot.id,
+            category: currentSpot.category,
+            city: currentSpot.city,
+          });
+        }
+
+        // 最後の leg: 最後のスポット → destination
+        if (validSpots.length > 0) {
+          const lastSpot = validSpots[validSpots.length - 1];
+          routeLegs.push({
+            index: validSpots.length + 1,
+            fromName: lastSpot.name,
+            toName: destinationName.replace("到着：", ""),
+            distanceText: "",
+            durationText: "",
+            stayTimeText: null,
+            spotId: null,
+            category: null,
+            city: null,
+          });
+        } else {
+          // スポットがない場合: origin → destination（出発地は既に追加済み）
+          routeLegs.push({
+            index: 1,
+            fromName: originName.replace("出発：", ""),
+            toName: destinationName.replace("到着：", ""),
+            distanceText: "",
+            durationText: "",
+            stayTimeText: null,
+            spotId: null,
+            category: null,
+            city: null,
+          });
+        }
+
+        return routeLegs;
+      }
+
+      // legs がある場合（Directions API 成功時）
+      // legs の構造:
+      // - legs[0]: origin → waypoint[0] (validSpots[0] に対応)
+      // - legs[1]: waypoint[0] → waypoint[1] (validSpots[1] に対応)
+      // - ...
+      // - legs[waypoints.length]: waypoint[waypoints.length-1] → destination
+      const routeLegs: RouteLegInfo[] = [];
+      
+      // 最初に出発地を追加（最初のlegのfromName）
+      if (legs.length > 0) {
+        const firstLeg = legs[0];
+        const firstFromName = originName.replace("出発：", "");
+        routeLegs.push({
+          index: 0,
+          fromName: firstFromName,
+          toName: firstFromName, // 表示用にtoNameにも同じ値を設定
+          distanceText: "",
+          durationText: "",
+          stayTimeText: null,
+          spotId: null,
+          category: null,
+          city: null,
+        });
+      }
+      
+      // 各legを処理して、スポットごとに1つのRouteLegInfoを作成
+      legs.forEach((leg, index) => {
+        // leg の to 先に対応するスポット
+        // index < validSpots.length の場合、legs[index] の to 先は validSpots[index]
+        // index === validSpots.length の場合、legs[index] の to 先は destination
+        const spot = index < validSpots.length ? validSpots[index] : null;
+
+        // 最初の leg の from は出発地名
+        const fromName =
+          index === 0
+            ? originName.replace("出発：", "")
+            : index <= validSpots.length
+            ? validSpots[index - 1]?.name ?? originName.replace("出発：", "")
+            : originName.replace("出発：", "");
+
+        // 最後の leg の to は到着地名、それ以外はスポット名
+        const isLastLeg = index === legs.length - 1;
+        const toName = isLastLeg
+          ? destinationName.replace("到着：", "")
+          : spot?.name ??
+            leg.end_address ??
+            `立ち寄りスポット${index + 1}`;
+
+        // ルート表の表示用インデックス（出発地がindex 0なので、+1する）
+        // 最初のleg（origin → spot[0]）は index 1
+        // 中間のlegs（spot[i-1] → spot[i]）は index i+1
+        // 最後のleg（spot[last] → destination）は index validSpots.length+1
+        const displayIndex = isLastLeg ? validSpots.length + 1 : index + 1;
+
+        routeLegs.push({
+          index: displayIndex,
+          fromName,
+          toName,
+          distanceText: leg.distance?.text ?? "",
+          durationText: leg.duration?.text ?? "",
+          stayTimeText: spot?.stay_time || null,
+          spotId: spot?.id ?? null,
+          category: spot?.category ?? null,
+          city: spot?.city ?? null,
+        });
+      });
+
+      return routeLegs;
     };
 
     // DirectionsServiceに渡すrequestオブジェクト（DRIVING固定）
@@ -527,15 +655,21 @@ export default function GoogleMap({
     };
 
     directionsServiceRef.current.route(request, (result: any, status: any) => {
-      // routeOrder を生成（成功・失敗問わず表示するため）
-      const routeOrder = buildRouteOrder();
-      console.log("[GoogleMap] Setting routeListData, routeOrder.length:", routeOrder.length);
-      setRouteListData(routeOrder);
 
       if (status === google.maps.DirectionsStatus.OK && result) {
         directionsRendererRef.current.setDirections(result);
         lastRouteSpotsRef.current = currentRouteKey;
         setRouteWarning(null);
+        
+        // routeLegs を生成してストアに保存
+        const route = result.routes[0];
+        const legs = route?.legs || [];
+        const routeLegs = buildRouteLegs(legs);
+        console.log("[GoogleMap] Generated routeLegs:", routeLegs.length, "legs");
+        console.log("[GoogleMap] routeLegs details:", JSON.stringify(routeLegs, null, 2));
+        console.log("[GoogleMap] validSpots:", validSpots.map(s => ({ id: s.id, name: s.name })));
+        setRouteLegs(routeLegs);
+        
         // ルート描画成功時は useEffect で自動表示されるため、ここでは何もしない
         console.log("[GoogleMap] Route drawn successfully (DRIVING)");
         return;
@@ -584,6 +718,12 @@ export default function GoogleMap({
           "🚧 このルートには冬季閉鎖区間が含まれている可能性があります。正確なルートは Google マップでご確認ください。";
         setRouteWarning(warning);
         directionsRendererRef.current?.setDirections({ routes: [] as any });
+        
+        // ZERO_RESULTS 時も routeLegs を生成（距離・時間は空欄）
+        const routeLegs = buildRouteLegs(null);
+        console.log("[GoogleMap] Generated routeLegs for ZERO_RESULTS:", routeLegs.length, "legs");
+        setRouteLegs(routeLegs);
+        
         // ZERO_RESULTS 時も RouteList を表示（useEffect で自動表示される）
         logFailure();
         return;
@@ -592,6 +732,12 @@ export default function GoogleMap({
       // その他のエラー
       setRouteWarning("ルートを取得できませんでした。Google マップで代替ルートをご確認ください。");
       directionsRendererRef.current?.setDirections({ routes: [] as any });
+      
+      // エラー時も routeLegs を生成（距離・時間は空欄）
+      const routeLegs = buildRouteLegs(null);
+      console.log("[GoogleMap] Generated routeLegs for error:", routeLegs.length, "legs");
+      setRouteLegs(routeLegs);
+      
       // エラー時も RouteList を表示（useEffect で自動表示される）
       logFailure();
     });
@@ -821,7 +967,7 @@ export default function GoogleMap({
         </div>
       )}
       <RouteList
-        route={routeListData}
+        routeLegs={routeLegs}
         visible={showRouteList}
         onClose={() => {
           if (onShowRouteListChange) {
