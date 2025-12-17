@@ -34,6 +34,365 @@ function getSupabaseClient() {
 }
 
 /**
+ * ユーザーの質問が施設案内に関するものかを判定する関数
+ */
+function isFacilityQuery(userMessage: string): boolean {
+  const normalizedMessage = userMessage.toLowerCase();
+  
+  const facilityKeywords = [
+    "温泉",
+    "大浴場",
+    "展望",
+    "サウナ",
+    "売店",
+    "カフェ",
+    "バー",
+    "利用",
+    "使える",
+    "入れる",
+    "何時",
+    "何時まで",
+    "営業",
+    "開いてる",
+    "開いて",
+    "利用時間",
+    "利用可能",
+    "貸切",
+    "風呂",
+    "ルーム",
+    "ラウンジ",
+  ];
+  
+  return facilityKeywords.some(keyword => normalizedMessage.includes(keyword));
+}
+
+/**
+ * 時刻を "HH:mm" 形式の文字列に変換する関数
+ * 前提: timeValue は 'HH:mm:ss' 形式の文字列（DBから返される形式）
+ * Date変換は行わず、文字列をそのまま整形するだけ
+ */
+function formatTime(timeValue: string | Date | null): string {
+  if (!timeValue) return "";
+  
+  try {
+    // 文字列の場合（'HH:mm:ss' 形式）
+    if (typeof timeValue === "string") {
+      // 'HH:mm:ss' から 'HH:mm' に変換
+      const timeMatch = timeValue.match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
+      if (timeMatch) {
+        return `${timeMatch[1]}:${timeMatch[2]}`;
+      }
+      // 既に 'HH:mm' 形式の場合はそのまま返す
+      if (timeValue.match(/^\d{2}:\d{2}$/)) {
+        return timeValue;
+      }
+      // パースできない場合は空文字を返す
+      console.warn("[koyo-stay-facility] formatTime: Invalid time format:", timeValue);
+      return "";
+    }
+    
+    // Date オブジェクトの場合は従来通り（後方互換性のため）
+    if (timeValue instanceof Date) {
+      return timeValue.toLocaleTimeString("ja-JP", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+    }
+    
+    return "";
+  } catch (error) {
+    console.error("[koyo-stay-facility] formatTime error:", error);
+    return "";
+  }
+}
+
+/**
+ * 施設データを取得してプロンプト用にフォーマットする関数
+ */
+async function getFacilityDataForPrompt(gender?: "male" | "female"): Promise<{
+  availableNow: string;
+  futureToday: string;
+  nextAvailable: string;
+  errorMessage?: string;
+}> {
+  try {
+    const supabase = getSupabaseClient();
+    
+    // 施設名マッピングを取得
+    const { data: facilities, error: facilitiesError } = await supabase
+      .from("ryokan_facilities")
+      .select("facility_key, name");
+    
+    if (facilitiesError) {
+      console.error("[koyo-stay] Error fetching ryokan_facilities:", facilitiesError);
+      return {
+        availableNow: "",
+        futureToday: "",
+        nextAvailable: "",
+        errorMessage: "施設名の取得に失敗しました。",
+      };
+    }
+    
+    const facilityNameMap = new Map<string, string>();
+    if (facilities) {
+      facilities.forEach((f: any) => {
+        facilityNameMap.set(f.facility_key, f.name);
+      });
+    }
+    
+    // v_available_facilities_now を取得
+    let availableNowData: any[] = [];
+    try {
+      const { data, error } = await supabase
+        .from("v_available_facilities_now")
+        .select("*");
+      
+      if (error) {
+        console.error("[koyo-stay-facility] Error fetching v_available_facilities_now:", error);
+      } else if (data) {
+        // デバッグ: VIEWから取得した生データを確認
+        console.log("[koyo-stay-facility] Raw data from v_available_facilities_now:", {
+          count: data.length,
+          sample: data.length > 0 ? data[0] : null,
+          allKeys: data.length > 0 ? Object.keys(data[0]) : [],
+        });
+        
+        // 時刻情報を詳細に確認
+        if (data.length > 0) {
+          console.log("[koyo-stay-facility] Time range details:");
+          data.forEach((item: any, index: number) => {
+            console.log(`  [${index}] ${item.facility_key || 'unknown'}:`, {
+              gender: item.gender,
+              available_from: item.available_from,
+              available_to: item.available_to,
+              from_type: typeof item.available_from,
+              to_type: typeof item.available_to,
+            });
+          });
+        }
+        
+        // 性別フィルタリング
+        if (gender) {
+          // 性別指定時: 指定された性別またはallのみ
+          availableNowData = data.filter(
+            (item: any) => item.gender === gender || item.gender === "all"
+          );
+          console.log(`[koyo-stay-facility] After gender filter (${gender}): ${availableNowData.length} records`);
+        } else {
+          // 性別未指定時: male / female / all をすべて取得（OR評価のため）
+          // 重要: 1行でも該当すれば「利用可能」として扱う（some評価）
+          // every()や性別別の先行NG判定は使用しない
+          availableNowData = data.filter(
+            (item: any) => item.gender === "male" || item.gender === "female" || item.gender === "all"
+          );
+          console.log(`[koyo-stay-facility] After gender filter (no gender): ${availableNowData.length} records`);
+          if (data.length > 0 && availableNowData.length === 0) {
+            console.log("[koyo-stay-facility] ⚠️ All records filtered out! Sample genders:", data.map((d: any) => d.gender));
+          }
+        }
+      } else {
+        console.log("[koyo-stay-facility] No data returned from v_available_facilities_now");
+      }
+    } catch (error) {
+      console.error("[koyo-stay] Error in v_available_facilities_now query:", error);
+    }
+    
+    // v_facility_rules_future_today を取得
+    let futureTodayData: any[] = [];
+    try {
+      const { data, error } = await supabase
+        .from("v_facility_rules_future_today")
+        .select("*");
+      
+      if (error) {
+        console.error("[koyo-stay] Error fetching v_facility_rules_future_today:", error);
+      } else if (data) {
+        // 性別フィルタリング
+        if (gender) {
+          // 性別指定時: 指定された性別またはallのみ
+          futureTodayData = data.filter(
+            (item: any) => item.gender === gender || item.gender === "all"
+          );
+        } else {
+          // 性別未指定時: male / female / all をすべて取得（OR評価のため）
+          futureTodayData = data.filter(
+            (item: any) => item.gender === "male" || item.gender === "female" || item.gender === "all"
+          );
+        }
+      }
+    } catch (error) {
+      console.error("[koyo-stay] Error in v_facility_rules_future_today query:", error);
+    }
+    
+    // v_next_available_facility_time を取得
+    let nextAvailableData: any[] = [];
+    try {
+      const { data, error } = await supabase
+        .from("v_next_available_facility_time")
+        .select("*");
+      
+      if (error) {
+        console.error("[koyo-stay] Error fetching v_next_available_facility_time:", error);
+      } else if (data) {
+        nextAvailableData = data;
+      }
+    } catch (error) {
+      console.error("[koyo-stay] Error in v_next_available_facility_time query:", error);
+    }
+    
+    // facility_key単位でデータをまとめる
+    const facilityGroups = new Map<string, {
+      name: string;
+      availableNow: any[];
+      futureToday: any[];
+      nextAvailable: any | null;
+    }>();
+    
+    // 利用可能な施設（v_available_facilities_nowに1行でも該当）
+    // 重要: facility_key単位でOR評価（some評価）
+    // 1行でもavailableNowに該当すれば「利用可能」
+    // every()や性別別の先行NG判定は使用しない
+    availableNowData.forEach((item: any) => {
+      const facilityKey = item.facility_key;
+      if (!facilityGroups.has(facilityKey)) {
+        facilityGroups.set(facilityKey, {
+          name: facilityNameMap.get(facilityKey) || facilityKey,
+          availableNow: [],
+          futureToday: [],
+          nextAvailable: null,
+        });
+      }
+      // 無条件で追加（OR評価のため、1行でも該当すれば利用可能）
+      facilityGroups.get(facilityKey)!.availableNow.push(item);
+    });
+    
+    // デバッグログ: データ取得状況を確認
+    console.log("[koyo-stay-facility] Data fetch summary:");
+    console.log(`  - availableNowData: ${availableNowData.length} records`);
+    console.log(`  - futureTodayData: ${futureTodayData.length} records`);
+    console.log(`  - nextAvailableData: ${nextAvailableData.length} records`);
+    console.log(`  - facilityGroups: ${facilityGroups.size} facilities`);
+    
+    // 今後の利用可能時間
+    futureTodayData.forEach((item: any) => {
+      const facilityKey = item.facility_key;
+      if (!facilityGroups.has(facilityKey)) {
+        facilityGroups.set(facilityKey, {
+          name: facilityNameMap.get(facilityKey) || facilityKey,
+          availableNow: [],
+          futureToday: [],
+          nextAvailable: null,
+        });
+      }
+      facilityGroups.get(facilityKey)!.futureToday.push(item);
+    });
+    
+    // 次回利用可能時刻
+    nextAvailableData.forEach((item: any) => {
+      const facilityKey = item.facility_key;
+      if (!facilityGroups.has(facilityKey)) {
+        facilityGroups.set(facilityKey, {
+          name: facilityNameMap.get(facilityKey) || facilityKey,
+          availableNow: [],
+          futureToday: [],
+          nextAvailable: null,
+        });
+      }
+      facilityGroups.get(facilityKey)!.nextAvailable = item;
+    });
+    
+    // プロンプト用にフォーマット（facility_key単位でまとめる）
+    // 判定ルール: 1行でもavailableNowに該当すれば「利用可能」（OR評価/some評価）
+    // 重要: facility_key単位で判定し、全行がNGな場合のみ「利用不可」
+    // every()や性別別の先行NG判定は使用しない
+    const formatAvailableNow = Array.from(facilityGroups.entries())
+      .filter(([_, group]) => {
+        // OR評価: 1行でもavailableNowに該当すれば利用可能
+        return group.availableNow.length > 0;
+      })
+      .map(([facilityKey, group]) => {
+        return `- facility_key: ${facilityKey}
+  name: ${group.name}
+  status: 利用可能
+  available_records:
+${group.availableNow.map((item: any) => `    - gender: ${item.gender || "unknown"}
+      available_from: ${formatTime(item.available_from) || "N/A"}
+      available_to: ${formatTime(item.available_to) || "N/A"}
+      rule_type: ${item.rule_type || "unknown"}
+      note: ${item.note || ""}`).join("\n")}`;
+      })
+      .join("\n");
+    
+    // デバッグログ: データ取得状況を確認
+    console.log("[koyo-stay-facility] Data fetch summary:");
+    console.log(`  - availableNowData: ${availableNowData.length} records`);
+    console.log(`  - futureTodayData: ${futureTodayData.length} records`);
+    console.log(`  - nextAvailableData: ${nextAvailableData.length} records`);
+    console.log(`  - facilityGroups: ${facilityGroups.size} facilities`);
+    
+    // デバッグログ: facility_key単位の判定結果を確認
+    console.log("[koyo-stay-facility] Facility availability by facility_key:");
+    Array.from(facilityGroups.entries()).forEach(([facilityKey, group]) => {
+      console.log(`  ${facilityKey}: availableNow=${group.availableNow.length} records (OR評価: ${group.availableNow.length > 0 ? "利用可能" : "利用不可"})`);
+      if (group.availableNow.length > 0) {
+        console.log(`    Records:`, group.availableNow.map((r: any) => `gender=${r.gender}, from=${r.available_from}, to=${r.available_to}`));
+      }
+    });
+    
+    // デバッグログ: フォーマット結果を確認
+    console.log("[koyo-stay-facility] Formatted data:");
+    console.log(`  - formatAvailableNow length: ${formatAvailableNow.length} chars`);
+    console.log(`  - formatAvailableNow preview: ${formatAvailableNow.substring(0, 200)}`);
+    
+    const formatFutureToday = Array.from(facilityGroups.entries())
+      .filter(([_, group]) => group.futureToday.length > 0)
+      .map(([facilityKey, group]) => {
+        return `- facility_key: ${facilityKey}
+  name: ${group.name}
+  future_records:
+${group.futureToday.map((item: any) => `    - gender: ${item.gender || "unknown"}
+      available_from: ${formatTime(item.available_from) || "N/A"}
+      available_to: ${formatTime(item.available_to) || "N/A"}
+      rule_type: ${item.rule_type || "unknown"}
+      note: ${item.note || ""}`).join("\n")}`;
+      })
+      .join("\n");
+    
+    const formatNextAvailable = Array.from(facilityGroups.entries())
+      .filter(([_, group]) => group.nextAvailable !== null)
+      .map(([facilityKey, group]) => {
+        const item = group.nextAvailable!;
+        return `- facility_key: ${facilityKey}
+  name: ${group.name}
+  next_available_from: ${formatTime(item.next_available_from) || "N/A"}
+  note: ${item.note || ""}`;
+      })
+      .join("\n");
+    
+    // デバッグログ: 最終的な返却データを確認
+    console.log("[koyo-stay-facility] Final return data:");
+    console.log(`  - availableNow: ${formatAvailableNow ? `${formatAvailableNow.length} chars` : "empty"}`);
+    console.log(`  - futureToday: ${formatFutureToday ? `${formatFutureToday.length} chars` : "empty"}`);
+    console.log(`  - nextAvailable: ${formatNextAvailable ? `${formatNextAvailable.length} chars` : "empty"}`);
+    
+    return {
+      availableNow: formatAvailableNow || "",
+      futureToday: formatFutureToday || "",
+      nextAvailable: formatNextAvailable || "",
+    };
+  } catch (error) {
+    console.error("[koyo-stay] Error in getFacilityDataForPrompt:", error);
+    return {
+      availableNow: "",
+      futureToday: "",
+      nextAvailable: "",
+      errorMessage: "施設データの取得中にエラーが発生しました。",
+    };
+  }
+}
+
+/**
  * Supabaseからスポット一覧を取得して、AIプロンプト用のテキストにフォーマット
  */
 async function getSpotListForPrompt(): Promise<string> {
@@ -70,6 +429,145 @@ async function getSpotListForPrompt(): Promise<string> {
     console.error("[koyo-stay] Error fetching spots:", error);
     return "【注意】スポット一覧の取得中にエラーが発生しました。";
   }
+}
+
+/**
+ * 施設案内用のシステムプロンプトを生成（Facility Operation）
+ */
+async function getFacilitySystemPrompt(gender?: "male" | "female"): Promise<string> {
+  const facilityData = await getFacilityDataForPrompt(gender);
+  
+  return `
+あなたは、山形県・上山温泉「日本の宿 古窯」の
+公式AIコンシェルジュです。
+
+あなたの役割は、
+宿泊者に対して「館内施設の利用可否・利用時間」を
+正確かつ簡潔に案内することです。
+
+あなたは以下の原則を必ず守ってください。
+
+【最重要原則】
+1. DBおよびVIEWに存在する情報のみを事実として扱う
+2. 推測・補完・想像で時間や条件を作らない
+3. あいまいな表現（まもなく・しばらく等）を使わない
+4. 案内できない場合は、必ずフロント案内に誘導する
+5. 施設名は必ず DB（ryokan_facilities.name）を使用する
+
+【参照するデータ】
+ryokan_facilities
+- facility_key
+- name（正式表示名）
+
+v_available_facilities_now
+- facility_key
+- gender
+- available_from
+- available_to
+- rule_type
+- note
+
+v_facility_rules_future_today
+- facility_key
+- gender
+- available_from
+- available_to
+- rule_type
+- note
+
+v_next_available_facility_time
+- facility_key
+- next_available_from
+- note
+
+【内部判断フロー（厳守）】
+1. v_available_facilities_now を最優先で確認する
+   → facility_key 単位で判定する
+   → 1行でも now に該当すれば「利用可能」
+   → 全行がNG（利用不可）な場合のみ「利用不可」
+
+2. 現在利用できない場合、
+   v_next_available_facility_time を確認する
+   → 次の利用可能時刻を案内する
+
+3. 利用者が性別を指定している場合、
+   v_facility_rules_future_today を確認し、
+   性別による交代・制限を説明する
+
+4. 本日中に該当データが存在しない場合、
+   「本日のご利用は終了」と案内する
+
+5. データ不整合・判断不能な場合は
+   フロント案内に誘導する
+
+【重要】
+性別未指定の場合は、
+male / female / all のいずれかが利用可能であれば
+「利用可能」と判断してください。
+どちらか一方のみ利用可能な場合は、
+その旨を必ず文章で補足してください。
+（例：「現在、男性のお時間帯です。女性の方は○時からご利用いただけます。」）
+
+【優先順位ルール】
+・rule_type は cleaning > normal
+・gender は 指定一致 > all
+・時間帯は [available_from, available_to) として扱う
+・同一条件が複数ある場合は、最も近い時間を採用する
+
+【回答テンプレ適用ルール】
+現在利用できる場合
+現在、【{facility_name}】はご利用いただけます。
+ご利用可能時間は【{available_to_formatted}】までです。
+
+現在利用できない → 次がある場合
+現在、【{facility_name}】はご利用いただけません。
+次は【{next_available_from_formatted}】からご利用可能です。
+
+性別交代制の場合
+現在は【{current_gender_label}】のお時間帯です。
+【{user_gender_label}】の方は【{next_available_from_formatted}】から
+ご利用いただけます。
+
+本日利用不可の場合
+申し訳ありません。
+【{facility_name}】の本日のご利用時間は終了しております。
+
+案内不能の場合（必須）
+恐れ入ります。
+【{facility_name}】のご利用時間については、
+フロントにてご案内しております。
+
+【表現ルール】
+・時間は「13時」「13時30分」「深夜1時」の形式で表記
+・施設名は必ず正式名称を使用
+・断定口調で、簡潔に案内する
+・不要な雑談や感想は入れない
+
+【人格・トーン】
+・丁寧
+・落ち着いている
+・旅館スタッフと同じ目線
+・親切だが簡潔
+
+【禁止事項】
+・独自判断で時間を推測すること
+・DBにない施設を案内すること
+・「たぶん」「〜と思います」などの不確実表現
+
+【現在の施設データ（事実のみ）】
+${facilityData.errorMessage ? `【注意】\n${facilityData.errorMessage}\n正確な案内ができない場合は、フロント案内に誘導してください。\n\n` : ""}
+【現在利用可能な施設】
+${facilityData.availableNow && facilityData.availableNow.length > 0 ? facilityData.availableNow : "該当データなし"}
+
+【本日の今後の利用可能時間】
+${facilityData.futureToday || "該当データなし"}
+
+【次回利用可能時刻】
+${facilityData.nextAvailable || "該当データなし"}
+
+上記データは事実の羅列です。あなたはこのデータを基に、
+ユーザーに対して正確で簡潔な案内を行ってください。
+`;
 }
 
 /**
@@ -447,46 +945,72 @@ function cleanReplyMessage(reply: string): string {
 }
 
 /**
- * リクエストボディの型
- * - messages: chat履歴（フロントが管理）
- * - query: 単発問い合わせ
+ * 施設案内AIのハンドラー関数
  */
-type StayRequestBody =
-  | { messages: ChatCompletionMessageParam[] }
-  | { query: string };
-
-export async function POST(req: NextRequest) {
+async function handleFacilityOperation(
+  userMessages: ChatCompletionMessageParam[],
+  gender?: "male" | "female"
+): Promise<NextResponse> {
   try {
-    const body = (await req.json()) as StayRequestBody;
-
-    let userMessages: ChatCompletionMessageParam[];
-
-    if ("messages" in body && Array.isArray(body.messages)) {
-      // フロントの履歴を採用
-      userMessages = body.messages;
-    } else if ("query" in body && typeof body.query === "string") {
-      // 単発問い合わせモード（MVP向け）
-      userMessages = [
-        {
-          role: "user",
-          content: body.query,
-        },
-      ];
-    } else {
-      return NextResponse.json(
-        { error: "messages または query が必要です。" },
-        { status: 400 }
-      );
-    }
-
-    // Supabaseからスポット一覧を取得してシステムプロンプトを生成
-    const systemPrompt = await getSystemPrompt();
-
+    const systemPrompt = await getFacilitySystemPrompt(gender);
+    
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: systemPrompt },
       ...userMessages,
     ];
+    
+    const openai = getOpenAIClient();
+    const completion = await openai.chat.completions.create({
+      model: CHAT_MODEL,
+      messages,
+      temperature: 0.7,
+      // JSON制約なし（replyのみ返す）
+    });
+    
+    const reply = completion.choices[0]?.message?.content ?? "";
+    
+    // デバッグログ
+    console.log("[koyo-stay-facility] AI reply:", reply.substring(0, 500));
+    
+    // レスポンス形式を統一（plan/spotsは空配列、routeInfoはnull）
+    return NextResponse.json({
+      reply: reply,
+      plan: [],
+      spots: [],
+      routeInfo: null,
+      usage: completion.usage,
+    });
+  } catch (error: any) {
+    console.error("[koyo-stay-facility] error:", error);
+    return NextResponse.json(
+      {
+        error: "施設案内AIの応答生成中にエラーが発生しました。",
+        detail: error?.message ?? String(error),
+        reply: "恐れ入ります。施設のご利用時間については、フロントにてご案内しております。",
+        plan: [],
+        spots: [],
+        routeInfo: null,
+      },
+      { status: 500 }
+    );
+  }
+}
 
+/**
+ * プラン提案AIのハンドラー関数（既存ロジック）
+ */
+async function handleStayPlanner(
+  userMessages: ChatCompletionMessageParam[]
+): Promise<NextResponse> {
+  try {
+    // Supabaseからスポット一覧を取得してシステムプロンプトを生成
+    const systemPrompt = await getSystemPrompt();
+    
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompt },
+      ...userMessages,
+    ];
+    
     const openai = getOpenAIClient();
     const completion = await openai.chat.completions.create({
       model: CHAT_MODEL,
@@ -494,16 +1018,16 @@ export async function POST(req: NextRequest) {
       temperature: 0.7,
       response_format: { type: "json_object" },
     });
-
+    
     const reply = completion.choices[0]?.message?.content ?? "";
-
+    
     // デバッグ: AIの応答をログ出力
     console.log("[koyo-stay] AI reply (first 500 chars):", reply.substring(0, 500));
-
+    
     // plan配列を抽出
     let planArray = await extractPlanFromReply(reply);
     console.log("[koyo-stay] Extracted plan array:", planArray ? `Found ${planArray.length} plans` : "No plan found");
-
+    
     // plan配列が取得できない場合、古い形式（配列形式）を試す
     if (!planArray) {
       console.log("[koyo-stay] Trying to extract old format (array)...");
@@ -525,22 +1049,20 @@ export async function POST(req: NextRequest) {
             }
           } catch (parseError) {
             console.warn("[koyo-stay] Failed to parse old format array:", parseError);
-            // JSONパースに失敗した場合、スポット名だけを抽出してマッチングを試す
-            // この場合は後続の処理でnameマッチングが行われる
           }
         }
       } catch (error) {
         console.warn("[koyo-stay] Failed to extract old format:", error);
       }
     }
-
+    
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
-
+    
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
-
+      
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
       if (matchedSpots && matchedSpots.length > 0) {
         finalPlan = planArray.map((plan, index) => {
@@ -561,7 +1083,7 @@ export async function POST(req: NextRequest) {
         finalPlan = undefined;
       }
     }
-
+    
     // replyからJSON部分を除去してクリーンなメッセージにする
     const cleanReply = cleanReplyMessage(reply);
     
@@ -572,23 +1094,23 @@ export async function POST(req: NextRequest) {
         ? matchedSpots.some(spot => cleanReply.includes(spot.name))
         : false
     );
-
+    
     // レスポンスを構築
     const response: any = {
       reply: cleanReply,
       usage: completion.usage,
     };
-
+    
     // planがある場合のみ追加
     if (finalPlan && finalPlan.length > 0) {
       response.plan = finalPlan;
     }
-
+    
     // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
     if (matchedSpots && matchedSpots.length > 0) {
       response.spots = matchedSpots;
     }
-
+    
     // routeInfo を構築（Stayモード：originは古窯固定）
     const waypoints =
       matchedSpots && Array.isArray(matchedSpots)
@@ -616,16 +1138,10 @@ export async function POST(req: NextRequest) {
               const lat = Number(s.lat);
               const lng = Number(s.lng);
               
-              // 蔵王お釜のIDをチェック（デバッグ用）
-              const zawaoOkamaId = "b916a6f4-7225-42df-800a-a48f5f030da0";
-              if (s.id === zawaoOkamaId) {
-                console.log(`[koyo-stay] Zawao Okama waypoint: lat=${lat}, lng=${lng}, type: lat=${typeof lat}, lng=${typeof lng}`);
-              }
-              
               return { lat, lng };
             })
         : [];
-
+    
     response.routeInfo = {
       origin: KOYO_COORDINATES,
       waypoints,
@@ -638,9 +1154,8 @@ export async function POST(req: NextRequest) {
       destination: response.routeInfo.destination,
       waypointsCount: response.routeInfo.waypoints.length,
       waypoints: response.routeInfo.waypoints,
-      containsZawaoOkama: matchedSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
     });
-
+    
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("[koyo-stay] error:", error);
@@ -648,6 +1163,74 @@ export async function POST(req: NextRequest) {
       {
         error: "旅中AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * リクエストボディの型
+ * - messages: chat履歴（フロントが管理）
+ * - query: 単発問い合わせ
+ * - gender: 性別（施設案内用、オプショナル）
+ */
+type StayRequestBody =
+  | { messages: ChatCompletionMessageParam[]; gender?: "male" | "female" }
+  | { query: string; gender?: "male" | "female" };
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as StayRequestBody;
+
+    let userMessages: ChatCompletionMessageParam[];
+    let userMessage: string;
+    const gender = body.gender;
+
+    if ("messages" in body && Array.isArray(body.messages)) {
+      // フロントの履歴を採用
+      userMessages = body.messages;
+      // 最後のユーザーメッセージを取得
+      const lastUserMessage = userMessages.filter((m) => m.role === "user").pop();
+      userMessage = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
+    } else if ("query" in body && typeof body.query === "string") {
+      // 単発問い合わせモード（MVP向け）
+      userMessage = body.query;
+      userMessages = [
+        {
+          role: "user",
+          content: body.query,
+        },
+      ];
+    } else {
+      return NextResponse.json(
+        { error: "messages または query が必要です。" },
+        { status: 400 }
+      );
+    }
+
+    // ルーティング: キーワードベースで施設案内かプラン提案かを判定
+    const isFacility = isFacilityQuery(userMessage);
+    console.log("[koyo-stay] User message:", userMessage);
+    console.log("[koyo-stay] Is facility query?", isFacility);
+    
+    if (isFacility) {
+      console.log("[koyo-stay] ⭐ Routing to Facility Operation AI");
+      return handleFacilityOperation(userMessages, gender);
+    } else {
+      console.log("[koyo-stay] ⭐ Routing to Stay Planner AI");
+      return handleStayPlanner(userMessages);
+    }
+  } catch (error: any) {
+    console.error("[koyo-stay] error:", error);
+    return NextResponse.json(
+      {
+        error: "旅中AIの応答生成中にエラーが発生しました。",
+        detail: error?.message ?? String(error),
+        reply: "申し訳ございません。エラーが発生しました。",
+        plan: [],
+        spots: [],
+        routeInfo: null,
       },
       { status: 500 }
     );
