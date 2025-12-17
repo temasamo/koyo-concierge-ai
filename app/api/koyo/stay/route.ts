@@ -115,7 +115,12 @@ async function getFacilityDataForPrompt(gender?: "male" | "female"): Promise<{
   futureToday: string;
   nextAvailable: string;
   errorMessage?: string;
+  requiresGender?: boolean; // 性別が必要かどうか
+  genderSpecificFacilities?: string[]; // 性別で分かれる施設名のリスト
 }> {
+  // 性別未指定時: 男女で分かれる施設があるかチェック用の変数
+  let requiresGender = false;
+  let genderSpecificFacilities: string[] = [];
   try {
     const supabase = getSupabaseClient();
     
@@ -130,6 +135,7 @@ async function getFacilityDataForPrompt(gender?: "male" | "female"): Promise<{
         availableNow: "",
         futureToday: "",
         nextAvailable: "",
+        requiresGender: false,
         errorMessage: "施設名の取得に失敗しました。",
       };
     }
@@ -180,16 +186,29 @@ async function getFacilityDataForPrompt(gender?: "male" | "female"): Promise<{
           );
           console.log(`[koyo-stay-facility] After gender filter (${gender}): ${availableNowData.length} records`);
         } else {
-          // 性別未指定時: male / female / all をすべて取得（OR評価のため）
-          // 重要: 1行でも該当すれば「利用可能」として扱う（some評価）
-          // every()や性別別の先行NG判定は使用しない
+          // 性別未指定時: gender=all の施設だけを取得
           availableNowData = data.filter(
-            (item: any) => item.gender === "male" || item.gender === "female" || item.gender === "all"
+            (item: any) => item.gender === "all"
           );
-          console.log(`[koyo-stay-facility] After gender filter (no gender): ${availableNowData.length} records`);
-          if (data.length > 0 && availableNowData.length === 0) {
-            console.log("[koyo-stay-facility] ⚠️ All records filtered out! Sample genders:", data.map((d: any) => d.gender));
-          }
+          console.log(`[koyo-stay-facility] After gender filter (no gender, all only): ${availableNowData.length} records`);
+          
+          // 男女で分かれる施設があるかチェック（性別が必要かどうかの判定）
+          const genderSpecificFacilityKeys = new Set<string>();
+          data.forEach((item: any) => {
+            if (item.gender === "male" || item.gender === "female") {
+              genderSpecificFacilityKeys.add(item.facility_key);
+            }
+          });
+          
+          // 性別が必要な施設名のリストを作成
+          genderSpecificFacilityKeys.forEach((facilityKey) => {
+            const name = facilityNameMap.get(facilityKey);
+            if (name) {
+              genderSpecificFacilities.push(name);
+            }
+          });
+          
+          requiresGender = genderSpecificFacilities.length > 0;
         }
       } else {
         console.log("[koyo-stay-facility] No data returned from v_available_facilities_now");
@@ -215,10 +234,8 @@ async function getFacilityDataForPrompt(gender?: "male" | "female"): Promise<{
             (item: any) => item.gender === gender || item.gender === "all"
           );
         } else {
-          // 性別未指定時: male / female / all をすべて取得（OR評価のため）
-          futureTodayData = data.filter(
-            (item: any) => item.gender === "male" || item.gender === "female" || item.gender === "all"
-          );
+          // 性別未指定時: gender=all の施設だけを取得
+          futureTodayData = data.filter((item: any) => item.gender === "all");
         }
       }
     } catch (error) {
@@ -376,10 +393,22 @@ ${group.futureToday.map((item: any) => `    - gender: ${item.gender || "unknown"
     console.log(`  - futureToday: ${formatFutureToday ? `${formatFutureToday.length} chars` : "empty"}`);
     console.log(`  - nextAvailable: ${formatNextAvailable ? `${formatNextAvailable.length} chars` : "empty"}`);
     
+    // 性別が必要な場合の早期リターン（性別未指定時のみ）
+    if (!gender && requiresGender) {
+      return {
+        availableNow: formatAvailableNow || "",
+        futureToday: formatFutureToday || "",
+        nextAvailable: formatNextAvailable || "",
+        requiresGender: true,
+        genderSpecificFacilities: genderSpecificFacilities,
+      };
+    }
+    
     return {
       availableNow: formatAvailableNow || "",
       futureToday: formatFutureToday || "",
       nextAvailable: formatNextAvailable || "",
+      requiresGender: false,
     };
   } catch (error) {
     console.error("[koyo-stay] Error in getFacilityDataForPrompt:", error);
@@ -387,6 +416,7 @@ ${group.futureToday.map((item: any) => `    - gender: ${item.gender || "unknown"
       availableNow: "",
       futureToday: "",
       nextAvailable: "",
+      requiresGender: false,
       errorMessage: "施設データの取得中にエラーが発生しました。",
     };
   }
@@ -434,10 +464,19 @@ async function getSpotListForPrompt(): Promise<string> {
 /**
  * 施設案内用のシステムプロンプトを生成（Facility Operation）
  */
-async function getFacilitySystemPrompt(gender?: "male" | "female"): Promise<string> {
+async function getFacilitySystemPrompt(gender?: "male" | "female"): Promise<{ prompt: string; requiresGender?: boolean; genderSpecificFacilities?: string[] }> {
   const facilityData = await getFacilityDataForPrompt(gender);
   
-  return `
+  // 性別が必要な場合の処理
+  if (facilityData.requiresGender && !gender) {
+    return {
+      prompt: "",
+      requiresGender: true,
+      genderSpecificFacilities: facilityData.genderSpecificFacilities || [],
+    };
+  }
+  
+  const prompt = `
 あなたは、山形県・上山温泉「日本の宿 古窯」の
 公式AIコンシェルジュです。
 
@@ -500,13 +539,9 @@ v_next_available_facility_time
 5. データ不整合・判断不能な場合は
    フロント案内に誘導する
 
-【重要】
-性別未指定の場合は、
-male / female / all のいずれかが利用可能であれば
-「利用可能」と判断してください。
-どちらか一方のみ利用可能な場合は、
-その旨を必ず文章で補足してください。
-（例：「現在、男性のお時間帯です。女性の方は○時からご利用いただけます。」）
+【重要：性別未指定時の処理】
+性別未指定の場合は、gender=all の施設のみを案内してください。
+男女で分かれる施設については、性別を確認する必要があります。
 
 【優先順位ルール】
 ・rule_type は cleaning > normal
@@ -568,6 +603,8 @@ ${facilityData.nextAvailable || "該当データなし"}
 上記データは事実の羅列です。あなたはこのデータを基に、
 ユーザーに対して正確で簡潔な案内を行ってください。
 `;
+  
+  return { prompt, requiresGender: false };
 }
 
 /**
@@ -952,10 +989,100 @@ async function handleFacilityOperation(
   gender?: "male" | "female"
 ): Promise<NextResponse> {
   try {
-    const systemPrompt = await getFacilitySystemPrompt(gender);
+    // ハイブリッド方式: リクエストボディのgenderを最優先、未指定時のみmessagesから抽出
+    let finalGender: "male" | "female" | undefined = gender;
+    
+    if (!finalGender) {
+      // フォールバック抽出: 直近のユーザー発話から性別を抽出
+      const lastUserMessage = userMessages
+        .filter((m) => m.role === "user")
+        .pop();
+      
+      if (lastUserMessage && typeof lastUserMessage.content === "string") {
+        const userText = lastUserMessage.content;
+        
+        // 性別検出を2系統に分ける
+        // 1. 話者の性別表明パターン（selfDeclaration）
+        //    「男性ですが」「女性です」「男です」「女です」など
+        //    日本語の文字境界を考慮して \b を削除
+        const selfDeclarationPattern = /(?:男性|女性|男|女|male|female)(?:ですが|です|だ|で|の者|でございます)/i;
+        const selfDeclarationMatches = userText.match(selfDeclarationPattern);
+        
+        // 2. 質問対象の性別指定パターン（questionTarget）
+        //    「女性は」「男性の」「女の」「男の」など
+        const questionTargetPattern = /(?:男性|女性|男|女|male|female)(?:は|の|が)/i;
+        const questionTargetMatches = userText.match(questionTargetPattern);
+        
+        // 3. 「男」「女」単独も検出対象（文脈判断が必要だが、まずは単純に検出）
+        const simpleGenderPattern = /(?:男性|女性|男|女|male|female)/i;
+        const simpleMatches = userText.match(simpleGenderPattern);
+        
+        // デバッグログ
+        console.log("[koyo-stay-facility] Gender detection debug:", {
+          userText,
+          selfDeclarationMatches,
+          questionTargetMatches,
+          simpleMatches,
+        });
+        
+        // 話者の性別表明を優先的に検出
+        if (selfDeclarationMatches && selfDeclarationMatches.length > 0) {
+          const matchedText = selfDeclarationMatches[0].toLowerCase();
+          if (matchedText.includes("男性") || matchedText.includes("男") || matchedText.includes("male")) {
+            finalGender = "male";
+            console.log("[koyo-stay-facility] Self-declared gender detected: male");
+          } else if (matchedText.includes("女性") || matchedText.includes("女") || matchedText.includes("female")) {
+            finalGender = "female";
+            console.log("[koyo-stay-facility] Self-declared gender detected: female");
+          }
+        }
+        // 話者の性別表明がない場合、単純な性別語句を検出（「男」「女」単独も含む）
+        else if (simpleMatches && simpleMatches.length === 1 && !questionTargetMatches) {
+          // 質問対象の性別指定がない場合のみ、話者の性別として扱う
+          const matchedText = simpleMatches[0].toLowerCase();
+          if (matchedText === "男性" || matchedText === "男" || matchedText === "male") {
+            finalGender = "male";
+            console.log("[koyo-stay-facility] Gender detected by fallback (simple): male");
+          } else if (matchedText === "女性" || matchedText === "女" || matchedText === "female") {
+            finalGender = "female";
+            console.log("[koyo-stay-facility] Gender detected by fallback (simple): female");
+          }
+        } else if (simpleMatches && simpleMatches.length > 1) {
+          // 複数マッチ時は性別未確定（家族代表問い合わせなど）
+          console.log("[koyo-stay-facility] Multiple gender matches detected, keeping gender undefined");
+        }
+        
+        // 質問対象の性別指定が検出された場合のログ
+        if (questionTargetMatches && questionTargetMatches.length > 0) {
+          console.log("[koyo-stay-facility] Question target gender detected (not self-declaration)");
+        }
+        
+        // 最終的な finalGender の状態をログ出力
+        console.log("[koyo-stay-facility] Final gender after detection:", finalGender);
+      }
+    }
+    
+    const systemPrompt = await getFacilitySystemPrompt(finalGender);
+    
+    // 性別が必要な場合の処理
+    if (systemPrompt.requiresGender && !finalGender) {
+      // 性別が必要な施設がある場合、確認質問を返す
+      const facilityNames = systemPrompt.genderSpecificFacilities || [];
+      const facilityList = facilityNames.length > 0 
+        ? facilityNames.join("、")
+        : "一部の施設";
+      
+      return NextResponse.json({
+        reply: `恐れ入ります。${facilityList}については、性別によって利用時間が異なります。\n\n男性ですか？女性ですか？`,
+        plan: [],
+        spots: [],
+        routeInfo: null,
+        requiresGender: true,
+      });
+    }
     
     const messages: ChatCompletionMessageParam[] = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: systemPrompt.prompt },
       ...userMessages,
     ];
     
