@@ -1,6 +1,6 @@
 // store/spots.ts
 import { create } from "zustand";
-import type { RouteLegInfo } from "@/types/route";
+import type { RouteLegInfo, RoutePlan } from "@/types/route";
 
 // /api/spots/search のレスポンス形式に合わせたSpot型
 export type Spot = {
@@ -41,6 +41,13 @@ export type RouteInfo = {
 };
 
 type SpotStore = {
+  // RoutePlan（双方向機能強化用）
+  routePlan: RoutePlan | null;
+  setRoutePlan: (routePlan: RoutePlan | null) => void;
+  clearRoutePlan: () => void;
+  updateRoutePlan: (updates: Partial<RoutePlan>) => void;
+  
+  // 既存フィールド（後方互換性のため保持、RoutePlanから同期）
   spots: Spot[];
   setSpots: (spots: Spot[]) => void;
   clearSpots: () => void;
@@ -74,7 +81,37 @@ const DEFAULT_DESTINATION: OriginInfo = {
   name: null,
 };
 
-export const useSpotStore = create<SpotStore>((set) => ({
+export const useSpotStore = create<SpotStore>((set, get) => ({
+  // RoutePlan管理
+  routePlan: null,
+  setRoutePlan: (routePlan) => {
+    set({ routePlan });
+    // RoutePlanが設定されたら、既存フィールドにも同期（後方互換性）
+    if (routePlan) {
+      set({
+        spots: routePlan.spots as Spot[],
+        routeInfo: {
+          origin: routePlan.origin,
+          waypoints: routePlan.spots
+            .filter((s) => s.lat != null && s.lng != null)
+            .map((s) => ({ lat: s.lat!, lng: s.lng! })),
+          destination: routePlan.destination,
+        },
+      });
+    }
+  },
+  clearRoutePlan: () => {
+    set({ routePlan: null });
+  },
+  updateRoutePlan: (updates) => {
+    const current = get().routePlan;
+    if (current) {
+      const updated = { ...current, ...updates };
+      get().setRoutePlan(updated);
+    }
+  },
+  
+  // 既存フィールド（後方互換性のため保持）
   spots: [],
   setSpots: (spots) => set({ spots }),
   clearSpots: () => set({ spots: [] }),

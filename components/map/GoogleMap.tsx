@@ -138,6 +138,7 @@ interface GoogleMapProps {
   onRouteWarningChange?: (warning: string | null) => void; // ルート取得失敗時の警告メッセージを親に通知
   showRouteList?: boolean; // RouteList の表示状態（親から制御）
   onShowRouteListChange?: (show: boolean) => void; // RouteList の表示状態を変更する関数
+  onSpotDoubleClick?: (spotId: string) => void; // スポットの2回タップ検出時に呼び出されるコールバック
 }
 
 export default function GoogleMap({
@@ -151,6 +152,7 @@ export default function GoogleMap({
   onRouteWarningChange,
   showRouteList: showRouteListProp,
   onShowRouteListChange,
+  onSpotDoubleClick,
 }: GoogleMapProps) {
   const { routeLegs, setRouteLegs } = useSpotStore();
   const mapRef = useRef<HTMLDivElement>(null);
@@ -168,6 +170,11 @@ export default function GoogleMap({
   } | null>(null);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
   const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
+  
+  // 2回タップ検出用の状態管理
+  const lastClickedSpotIdRef = useRef<string | null>(null);
+  const lastClickTimeRef = useRef<number>(0);
+  const DOUBLE_CLICK_THRESHOLD = 500; // 500ms以内の2回タップを検出
   
   // 親から制御される場合は prop を使用、そうでない場合は内部 state を使用
   const showRouteList = showRouteListProp !== undefined ? showRouteListProp : false;
@@ -1063,6 +1070,28 @@ export default function GoogleMap({
             map: mapInstanceRef.current,
             anchor: marker,
           });
+          
+          // 2回タップ検出
+          if (point.spotId && onSpotDoubleClick) {
+            const now = Date.now();
+            const timeSinceLastClick = now - lastClickTimeRef.current;
+            
+            if (
+              lastClickedSpotIdRef.current === point.spotId &&
+              timeSinceLastClick < DOUBLE_CLICK_THRESHOLD
+            ) {
+              // 2回タップ検出
+              console.log("[GoogleMap] Double click detected for spot:", point.spotId);
+              onSpotDoubleClick(point.spotId);
+              // リセット
+              lastClickedSpotIdRef.current = null;
+              lastClickTimeRef.current = 0;
+            } else {
+              // 1回目のタップ
+              lastClickedSpotIdRef.current = point.spotId;
+              lastClickTimeRef.current = now;
+            }
+          }
         });
         infoWindowsRef.current.push(infoWindow);
       }

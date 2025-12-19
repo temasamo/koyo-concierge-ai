@@ -1,0 +1,150 @@
+# 性別処理の修正パッチ（ハイブリッド方式：API側フォールバック抽出）
+
+## API側の修正（app/api/koyo/stay/route.ts）
+
+### 1. handleFacilityOperation 関数にハイブリッド方式を追加
+
+--- a/app/api/koyo/stay/route.ts
++++ b/app/api/koyo/stay/route.ts
+@@ -947,7 +947,50 @@
+ /**
+  * 施設案内AIのハンドラー関数
+  */
+ async function handleFacilityOperation(
+   userMessages: ChatCompletionMessageParam[],
+   gender?: "male" | "female"
+ ): Promise<NextResponse> {
+   try {
++    // ハイブリッド方式: リクエストボディのgenderを最優先、未指定時のみmessagesから抽出
++    let finalGender: "male" | "female" | undefined = gender;
++    
++    if (!finalGender) {
++      // フォールバック抽出: 直近のユーザー発話から性別を抽出
++      const lastUserMessage = userMessages
++        .filter((m) => m.role === "user")
++        .pop();
++      
++      if (lastUserMessage && typeof lastUserMessage.content === "string") {
++        const userText = lastUserMessage.content;
++        
++        // 正規表現パターン: 明示的な性別語句のみを検出
++        // 検出対象: 男性、女性、男、女、male、female
++        // 検出しない: 男性の方、女性用、男女、男と女など
++        const genderPattern = /\b(男性|女性|男|女|male|female)\b/i;
++        const matches = userText.match(new RegExp(genderPattern.source, "gi"));
++        
++        if (matches && matches.length === 1) {
++          // 単一マッチ時のみ性別を確定
++          const matchedText = matches[0].toLowerCase();
++          if (matchedText === "男性" || matchedText === "男" || matchedText === "male") {
++            finalGender = "male";
++            console.log("[koyo-stay-facility] Gender detected by fallback: male");
++          } else if (matchedText === "女性" || matchedText === "女" || matchedText === "female") {
++            finalGender = "female";
++            console.log("[koyo-stay-facility] Gender detected by fallback: female");
++          }
++        } else if (matches && matches.length > 1) {
++          // 複数マッチ時は性別未確定（家族代表問い合わせなど）
++          console.log("[koyo-stay-facility] Multiple gender matches detected, keeping gender undefined");
++        }
++      }
++    }
++    
+-    const systemPrompt = await getFacilitySystemPrompt(gender);
++    const systemPrompt = await getFacilitySystemPrompt(finalGender);
+     
+-    // 性別が必要な場合の処理
+-    if (systemPrompt.requiresGender && !gender) {
++    // 性別が必要な場合の処理
++    if (systemPrompt.requiresGender && !finalGender) {
+       // 性別が必要な施設がある場合、確認質問を返す
+       const facilityNames = systemPrompt.genderSpecificFacilities || [];
+       const facilityList = facilityNames.length > 0 
+         ? facilityNames.join("、")
+         : "一部の施設";
+       
+       return NextResponse.json({
+         reply: `恐れ入ります。${facilityList}については、性別によって利用時間が異なります。\n\n男性ですか？女性ですか？`,
+         plan: [],
+         spots: [],
+         routeInfo: null,
+         requiresGender: true,
+       });
+     }
+     
+     const messages: ChatCompletionMessageParam[] = [
+-      { role: "system", content: systemPrompt },
++      { role: "system", content: systemPrompt.prompt },
+       ...userMessages,
+     ];
+     
+     const openai = getOpenAIClient();
+     const completion = await openai.chat.completions.create({
+       model: CHAT_MODEL,
+       messages,
+       temperature: 0.7,
+       // JSON制約なし（replyのみ返す）
+     });
+     
+     const reply = completion.choices[0]?.message?.content ?? "";
+     
+     // デバッグログ
+     console.log("[koyo-stay-facility] AI reply:", reply.substring(0, 500));
+     
+     // レスポンス形式を統一（plan/spotsは空配列、routeInfoはnull）
+     return NextResponse.json({
+       reply: reply,
+       plan: [],
+       spots: [],
+       routeInfo: null,
+       usage: completion.usage,
+     });
+   } catch (error: any) {
+     console.error("[koyo-stay-facility] error:", error);
+     return NextResponse.json(
+       {
+         error: "施設案内AIの応答生成中にエラーが発生しました。",
+         detail: error?.message ?? String(error),
+         reply: "恐れ入ります。施設のご利用時間については、フロントにてご案内しております。",
+         plan: [],
+         spots: [],
+         routeInfo: null,
+       },
+       { status: 500 }
+     );
+   }
+ }
+
+## フロントエンド側の修正（変更なし）
+
+フロントエンド側は既存の実装のままです。
+- `store/spots.ts` に `gender` と `setGender` が既に追加されている
+- `app/page.tsx` で性別の検出と送信が既に実装されている
+
+## 実装内容の説明
+
+### ハイブリッド方式の動作フロー
+
+1. **リクエストボディのgenderを最優先**
+   - フロントエンドから `gender` が送信されている場合は、それをそのまま使用
+
+2. **フォールバック抽出（gender未指定時のみ）**
+   - `userMessages` の最後の `user` role メッセージから性別を抽出
+   - 正規表現 `/\b(男性|女性|男|女|male|female)\b/i` で検出
+   - 単一マッチ時のみ性別を確定
+   - 複数マッチ時は性別未確定として扱い、確認質問に進む
+
+3. **性別が必要な場合の処理**
+   - `finalGender` が未確定で、性別が必要な施設がある場合
+   - 確認質問を返す（`requiresGender: true`）
+
+### 正規表現パターンの詳細
+
+- **検出対象**: `男性`、`女性`、`男`、`女`、`male`、`female`
+- **検出しない**: `男性の方`、`女性用`、`男女`、`男と女` など
+- **境界文字**: `\b` を使用して単語境界をチェック
+
+### ログ出力
+
+- フォールバック抽出で性別を検出した場合: `[koyo-stay-facility] Gender detected by fallback: {male|female}`
+- 複数マッチ時: `[koyo-stay-facility] Multiple gender matches detected, keeping gender undefined`

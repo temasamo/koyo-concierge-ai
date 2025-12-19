@@ -24,3 +24,36 @@ export type RoutePoint = {
 
 export type KoyoMode = "before" | "stay" | "after";
 
+// RoutePlan: 双方向機能強化用のルートプラン状態
+export type RoutePlan = {
+  planId: string; // 一意のID（UUID形式）
+  mode: "BEFORE" | "STAY" | "AFTER";
+  dayIndex?: number; // 複数日の場合の日付インデックス（オプショナル）
+  origin: { lat: number; lng: number }; // 出発地座標
+  spots: Array<{
+    id: string;
+    name: string;
+    lat: number | null;
+    lng: number | null;
+    category: string | null;
+    city: string | null;
+    season: string | null;
+    drive_time: string | null;
+    walk_time: string | null;
+    stay_time: string | null;
+    url: string | null;
+    tags: string | null;
+    drive_minutes: number | null;
+    stayMinutes?: number | null;
+    // Google Places API由来の場合は以下が設定される
+    placeId?: string; // Google Places APIのplace_id
+    isFromPlaces?: boolean; // Places API由来かどうか
+  }>;
+  destination: { lat: number; lng: number }; // 目的地座標
+  constraints: {
+    pace?: "relax" | "normal";
+    maxWalkMin?: number;
+  };
+  bCallCount: number; // Google Places API（B）の呼び出し回数（最大1回）
+};
+

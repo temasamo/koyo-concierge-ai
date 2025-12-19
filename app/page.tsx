@@ -9,6 +9,7 @@ import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
 import { useSpotStore } from "@/store/spots";
 import { useMessageStore } from "@/store/messages";
 import type { Msg } from "@/store/messages";
+import type { RoutePlan } from "@/types/route";
 
 // モードごとの初期メッセージ
 const INITIAL_MESSAGES: Record<KoyoMode, string> = {
@@ -41,6 +42,9 @@ export default function Page() {
   const clearDestination = useSpotStore((s) => s.clearDestination);
   const setRouteInfo = useSpotStore((s) => s.setRouteInfo);
   const clearRouteInfo = useSpotStore((s) => s.clearRouteInfo);
+  const setRoutePlan = useSpotStore((s) => s.setRoutePlan);
+  const clearRoutePlan = useSpotStore((s) => s.clearRoutePlan);
+  const routePlan = useSpotStore((s) => s.routePlan);
 
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   const prevModeRef = useRef<KoyoMode>(mode);
@@ -96,25 +100,50 @@ export default function Page() {
         { role: "user", content: inputMessage }
       ];
 
-      // ③ モードに応じてAPIエンドポイントを決定
-      const apiEndpoint = `/api/koyo/${mode}`;
+      // ③ ルート編集の意図を判定（簡易キーワードベース）
+      const isRouteEditIntent = (() => {
+        if (!routePlan) return false; // routePlanが存在しない場合は編集不可
+        const normalized = inputMessage.toLowerCase();
+        const editKeywords = [
+          "変更", "変え", "修正", "調整", "短く", "近く", "減らす", "削除",
+          "ゆっくり", "のんびり", "余裕", "時間", "急がない",
+          "食べる", "ご飯", "ランチ", "カフェ", "休憩",
+        ];
+        return editKeywords.some(kw => normalized.includes(kw));
+      })();
 
-      // ④ API コール
+      // ④ エンドポイントを決定
+      const apiEndpoint = isRouteEditIntent
+        ? `/api/koyo/${mode}/edit`
+        : `/api/koyo/${mode}`;
+
+      // ⑤ API コール
       // リクエスト送信時に最新の origin と destination を取得
       const currentOrigin = useSpotStore.getState().origin;
       const currentDestination = useSpotStore.getState().destination;
+      const currentRoutePlan = useSpotStore.getState().routePlan;
       console.log("[page.tsx] Sending request with origin:", currentOrigin);
       console.log("[page.tsx] Sending request with destination:", currentDestination);
+      console.log("[page.tsx] Is route edit intent?", isRouteEditIntent);
+      console.log("[page.tsx] Current routePlan:", currentRoutePlan?.planId);
+      
+      const requestBody = isRouteEditIntent && currentRoutePlan
+        ? {
+            routePlan: currentRoutePlan,
+            userMessage: inputMessage,
+          }
+        : {
+            messages: latestMessages,
+            userState: {
+              origin: currentOrigin,
+              destination: mode === "after" ? currentDestination : undefined,
+            },
+          };
+      
       const res = await fetch(apiEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: latestMessages,
-          userState: {
-            origin: currentOrigin,
-            destination: mode === "after" ? currentDestination : undefined,
-          },
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!res.ok) {
@@ -129,6 +158,7 @@ export default function Page() {
       console.log("[page.tsx] origin from API:", data.origin);
       console.log("[page.tsx] destination from API:", data.destination);
       console.log("[page.tsx] routeInfo:", data.routeInfo);
+      console.log("[page.tsx] routePlan from API:", data.routePlan);
       console.log("[page.tsx] current origin in store:", origin);
       console.log("[page.tsx] current destination in store:", destination);
 
@@ -170,6 +200,53 @@ export default function Page() {
       } else {
         clearRouteInfo();
         console.log("[page.tsx] Clear routeInfo");
+      }
+
+      // 🔽 RoutePlan の更新
+      if (isRouteEditIntent && data.routePlan) {
+        // 編集エンドポイントからのレスポンス: routePlanを更新
+        setRoutePlan(data.routePlan);
+        console.log("[page.tsx] Updated RoutePlan from edit:", data.routePlan.planId);
+      } else if (!isRouteEditIntent && data.spots && Array.isArray(data.spots) && data.spots.length > 0 && data.routeInfo) {
+        // 初期生成: 新しいRoutePlanを作成
+        const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const modeUpper = mode.toUpperCase() as "BEFORE" | "STAY" | "AFTER";
+        
+        const routePlan: RoutePlan = {
+          planId,
+          mode: modeUpper,
+          dayIndex: undefined, // 複数日対応は将来実装
+          origin: data.routeInfo.origin,
+          spots: data.spots.map((spot: any) => ({
+            id: spot.id,
+            name: spot.name,
+            lat: spot.lat,
+            lng: spot.lng,
+            category: spot.category,
+            city: spot.city,
+            season: spot.season,
+            drive_time: spot.drive_time,
+            walk_time: spot.walk_time,
+            stay_time: spot.stay_time,
+            url: spot.url,
+            tags: spot.tags,
+            drive_minutes: spot.drive_minutes,
+            stayMinutes: spot.stayMinutes || (spot.stay_time ? parseInt(spot.stay_time.match(/\d+/)?.[0] || "0") : null),
+          })),
+          destination: data.routeInfo.destination,
+          constraints: {
+            pace: "normal", // デフォルト値
+            maxWalkMin: undefined,
+          },
+          bCallCount: 0, // 初期生成時は0
+        };
+        
+        setRoutePlan(routePlan);
+        console.log("[page.tsx] Created and saved RoutePlan:", routePlan.planId, "with", routePlan.spots.length, "spots");
+      } else if (!isRouteEditIntent) {
+        // spots または routeInfo が存在しない場合は RoutePlan をクリア
+        clearRoutePlan();
+        console.log("[page.tsx] Cleared RoutePlan (no spots or routeInfo)");
       }
 
       // ============================================================

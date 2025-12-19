@@ -4,14 +4,18 @@ import { useRouter } from "next/navigation";
 import { useState, useMemo } from "react";
 import GoogleMap from "@/components/map/GoogleMap";
 import { useSpotStore } from "@/store/spots";
+import { useMessageStore } from "@/store/messages";
+import { useKoyoMode } from "@/app/koyo-lab-ui/hooks/useKoyoMode";
 import { KOYO_COORDINATES } from "@/constants/koyo";
 import { buildGoogleMapsUrl } from "@/utils/googleMaps";
 
 export default function MapPage() {
   const router = useRouter();
+  const { mode } = useKoyoMode();
   const spots = useSpotStore((state) => state.spots);
   const origin = useSpotStore((state) => state.origin);
   const routeInfo = useSpotStore((state) => state.routeInfo);
+  const addMessage = useMessageStore((state) => state.addMessage);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
   const [showRouteList, setShowRouteList] = useState(false);
 
@@ -50,6 +54,24 @@ export default function MapPage() {
     
     console.log("[MapPage] Generated Google Maps URL:", url);
     window.open(url, "_blank");
+  };
+
+  const handleSpotDoubleClick = (spotId: string) => {
+    // スポット情報を取得
+    const spot = spots.find((s) => s.id === spotId);
+    if (!spot) {
+      console.warn("[MapPage] Spot not found for double click:", spotId);
+      return;
+    }
+
+    // チャットに自動発話を追加
+    addMessage(mode, {
+      role: "assistant",
+      content: "こちら、気になっていますか？",
+    });
+
+    // チャットページに戻る
+    router.push("/");
   };
 
   return (
@@ -126,6 +148,7 @@ export default function MapPage() {
           onRouteWarningChange={setRouteWarning}
           showRouteList={showRouteList}
           onShowRouteListChange={setShowRouteList}
+          onSpotDoubleClick={handleSpotDoubleClick}
         />
       </div>
 
