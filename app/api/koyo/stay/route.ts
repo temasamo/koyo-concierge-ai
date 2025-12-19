@@ -5,6 +5,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
+import { detectLunchIntent, searchLunchPlaces, convertPlaceToSpot } from "../_utils/places";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -922,6 +923,7 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
           drive_minutes: matched.drive_time
             ? parseInt(matched.drive_time.match(/\d+/)?.[0] || "0")
             : null,
+          source: "db", // DBスポットであることを明示
         });
         usedSpotIds.add(matched.id);
         console.log(`[koyo-stay] Matched spot: "${aiSpot.name || aiSpot.id}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
@@ -1130,6 +1132,10 @@ async function handleStayPlanner(
   userMessages: ChatCompletionMessageParam[]
 ): Promise<NextResponse> {
   try {
+    // 最後のユーザーメッセージを取得
+    const lastUserMessage = userMessages.filter((m) => m.role === "user").pop();
+    const userMessage = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
+
     // Supabaseからスポット一覧を取得してシステムプロンプトを生成
     const systemPrompt = await getSystemPrompt();
     
@@ -1186,9 +1192,42 @@ async function handleStayPlanner(
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
+    let placesApiFailed = false;
     
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
+      
+      // ランチ系発話を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
+      if (matchedSpots && matchedSpots.length > 0) {
+        const wantsLunch = detectLunchIntent(userMessage);
+        
+        if (wantsLunch) {
+          // waypointsの中間地点を基準に検索
+          const baseSpotIndex = Math.floor(matchedSpots.length / 2);
+          const baseSpot = matchedSpots[baseSpotIndex];
+          
+          if (baseSpot.lat != null && baseSpot.lng != null) {
+            const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+            console.log("[koyo-stay] Lunch intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex);
+            
+            const place = await searchLunchPlaces(baseLocation);
+            
+            if (place) {
+              const lunchSpot = convertPlaceToSpot(place);
+              // spots配列の中間に挿入
+              const insertIndex = Math.floor(matchedSpots.length / 2);
+              matchedSpots.splice(insertIndex, 0, lunchSpot);
+              console.log("[koyo-stay] Added lunch place at index:", insertIndex, "name:", place.name);
+            } else {
+              placesApiFailed = true;
+              console.log("[koyo-stay] No lunch place found from Google Places API");
+            }
+          } else {
+            placesApiFailed = true;
+            console.warn("[koyo-stay] Base spot has no coordinates");
+          }
+        }
+      }
       
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
       if (matchedSpots && matchedSpots.length > 0) {
@@ -1212,7 +1251,12 @@ async function handleStayPlanner(
     }
     
     // replyからJSON部分を除去してクリーンなメッセージにする
-    const cleanReply = cleanReplyMessage(reply);
+    let cleanReply = cleanReplyMessage(reply);
+    
+    // Places API失敗時のメッセージを追加
+    if (placesApiFailed && detectLunchIntent(userMessage)) {
+      cleanReply += "\n\n申し訳ありません。周辺で条件に合うランチスポットが見つからなかったため、観光中心のプランをご提案しています。";
+    }
     
     // デバッグログ
     console.log("[koyo-stay] Cleaned reply:", cleanReply);

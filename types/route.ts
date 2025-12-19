@@ -45,9 +45,10 @@ export type RoutePlan = {
     tags: string | null;
     drive_minutes: number | null;
     stayMinutes?: number | null;
+    source: "db" | "places" | "virtual"; // スポットの出所（A/B/C区別用）
     // Google Places API由来の場合は以下が設定される
     placeId?: string; // Google Places APIのplace_id
-    isFromPlaces?: boolean; // Places API由来かどうか
+    isFromPlaces?: boolean; // Places API由来かどうか（後方互換性のため残す）
   }>;
   destination: { lat: number; lng: number }; // 目的地座標
   constraints: {

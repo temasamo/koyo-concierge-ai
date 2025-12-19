@@ -12,6 +12,7 @@ import type { PrefectureKey } from "./_constants/prefEntryPoints";
 import type { OriginInfo } from "@/store/spots";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
+import { detectLunchIntent, searchLunchPlaces, convertPlaceToSpot } from "../_utils/places";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -38,6 +39,57 @@ function getSupabaseClient() {
   }
 
   return createClient(supabaseUrl, supabaseServiceRoleKey);
+}
+
+/**
+ * ランチ系発話を検出してPlaces APIを呼び出し、spots配列に統合
+ */
+async function integrateLunchPlace(
+  spots: any[],
+  userMessage: string
+): Promise<{ spots: any[]; placesApiFailed: boolean }> {
+  if (!spots || spots.length === 0) {
+    return { spots, placesApiFailed: false };
+  }
+
+  const wantsLunch = detectLunchIntent(userMessage);
+  let placesApiFailed = false;
+
+  if (wantsLunch) {
+    // waypointsの中間地点を基準に検索
+    const baseSpotIndex = Math.floor(spots.length / 2);
+    const baseSpot = spots[baseSpotIndex];
+
+    if (baseSpot.lat != null && baseSpot.lng != null) {
+      const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+      console.log("[koyo-before] Lunch intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex);
+
+      const place = await searchLunchPlaces(baseLocation);
+
+      if (place) {
+        const lunchSpot = convertPlaceToSpot(place);
+        // spots配列の中間に挿入
+        const insertIndex = Math.floor(spots.length / 2);
+        spots.splice(insertIndex, 0, lunchSpot);
+        console.log("[koyo-before] Added lunch place at index:", insertIndex, "name:", place.name);
+      } else {
+        placesApiFailed = true;
+        console.log("[koyo-before] No lunch place found from Google Places API");
+      }
+    } else {
+      placesApiFailed = true;
+      console.warn("[koyo-before] Base spot has no coordinates");
+    }
+  }
+
+  // DBスポットにsourceフィールドを追加
+  spots.forEach((spot) => {
+    if (!spot.source) {
+      spot.source = "db";
+    }
+  });
+
+  return { spots, placesApiFailed };
 }
 
 /**
@@ -559,6 +611,15 @@ export async function POST(req: NextRequest) {
           userMessage,
         });
 
+        // Places API統合（ランチ系発話の場合）
+        let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
+        let placesApiFailed = false;
+        if (finalSpots.length > 0) {
+          const result = await integrateLunchPlace(finalSpots, userMessage);
+          finalSpots = result.spots;
+          placesApiFailed = result.placesApiFailed;
+        }
+
         // routeInfo を構築（origin/waypoints/destination）
         let routeOrigin: { lat: number; lng: number };
         if (currentOrigin.type === "pref-boundary" && currentOrigin.pref) {
@@ -572,17 +633,25 @@ export async function POST(req: NextRequest) {
         }
 
         const waypoints =
-          plan.spots && Array.isArray(plan.spots)
-            ? plan.spots
+          finalSpots.length > 0
+            ? finalSpots
                 .filter((s: any) => s.lat != null && s.lng != null)
                 .map((s: any) => ({ lat: s.lat, lng: s.lng }))
             : [];
 
         const destination = KOYO_COORDINATES;
 
+        // Places API失敗時のメッセージを追加
+        let reply = plan.reply || "";
+        if (placesApiFailed && detectLunchIntent(userMessage)) {
+          reply += "\n\n申し訳ありません。周辺で条件に合うランチスポットが見つからなかったため、観光中心のプランをご提案しています。";
+        }
+
         // ✅ Pre-Checkin 時だけ origin を返す
         return NextResponse.json({
           ...plan,
+          spots: finalSpots,
+          reply,
           origin: currentOrigin,
           routeInfo: {
             origin: routeOrigin,
@@ -653,15 +722,32 @@ G. その他（自由入力）
             userMessage,
           });
 
+          // Places API統合（ランチ系発話の場合）
+          let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
+          let placesApiFailed = false;
+          if (finalSpots.length > 0) {
+            const result = await integrateLunchPlace(finalSpots, userMessage);
+            finalSpots = result.spots;
+            placesApiFailed = result.placesApiFailed;
+          }
+
           const waypoints =
-            plan.spots && Array.isArray(plan.spots)
-              ? plan.spots
+            finalSpots.length > 0
+              ? finalSpots
                   .filter((s: any) => s.lat != null && s.lng != null)
                   .map((s: any) => ({ lat: s.lat, lng: s.lng }))
               : [];
 
+          // Places API失敗時のメッセージを追加
+          let reply = plan.reply || "";
+          if (placesApiFailed && detectLunchIntent(userMessage)) {
+            reply += "\n\n申し訳ありません。周辺で条件に合うランチスポットが見つからなかったため、観光中心のプランをご提案しています。";
+          }
+
           return NextResponse.json({
             ...plan,
+            spots: finalSpots,
+            reply,
             origin: {
               type: "fixed",
               pref: null,
@@ -704,16 +790,33 @@ G. その他（自由入力）
             prefecture: resolution.prefecture,
           });
 
+          // Places API統合（ランチ系発話の場合）
+          let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
+          let placesApiFailed = false;
+          if (finalSpots.length > 0) {
+            const result = await integrateLunchPlace(finalSpots, userMessage);
+            finalSpots = result.spots;
+            placesApiFailed = result.placesApiFailed;
+          }
+
           const prefBoundary = getPrefBoundary(resolution.prefecture);
           const waypoints =
-            plan.spots && Array.isArray(plan.spots)
-              ? plan.spots
+            finalSpots.length > 0
+              ? finalSpots
                   .filter((s: any) => s.lat != null && s.lng != null)
                   .map((s: any) => ({ lat: s.lat, lng: s.lng }))
               : [];
 
+          // Places API失敗時のメッセージを追加
+          let reply = plan.reply || "";
+          if (placesApiFailed && detectLunchIntent(userMessage)) {
+            reply += "\n\n申し訳ありません。周辺で条件に合うランチスポットが見つからなかったため、観光中心のプランをご提案しています。";
+          }
+
           return NextResponse.json({
             ...plan,
+            spots: finalSpots,
+            reply,
             origin: {
               type: "pref-boundary",
               pref: resolution.prefecture,

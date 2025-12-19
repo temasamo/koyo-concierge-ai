@@ -16,6 +16,8 @@ type GooglePlace = {
   types: string[];
   rating?: number;
   user_ratings_total?: number;
+  // 距離計算用（nearbySearchでは返されないが、計算で使用）
+  distance?: number;
 };
 
 type GooglePlacesResponse = {
@@ -36,19 +38,29 @@ function estimateIntent(userMessage: string): {
   wantsFood?: boolean;
   wantsCafe?: boolean;
   wantsShorter?: boolean;
+  wantsLunch?: boolean;
 } {
   const normalized = userMessage.toLowerCase();
   
   const relaxKeywords = ["ゆっくり", "のんびり", "ゆったり", "余裕", "時間", "急がない"];
-  const foodKeywords = ["食べる", "ご飯", "ランチ", "食事", "レストラン", "お店", "食事処"];
+  const foodKeywords = ["食べる", "ご飯", "食事", "レストラン", "お店", "食事処"];
   const cafeKeywords = ["カフェ", "休憩", "コーヒー", "ティー", "一休み"];
   const shorterKeywords = ["短く", "近く", "少なく", "減らす", "削除"];
+  
+  // wantsLunch判定（wantsFoodも含む）
+  const wantsLunch = 
+    foodKeywords.some(kw => normalized.includes(kw)) ||
+    normalized.includes("ランチ") ||
+    normalized.includes("昼") ||
+    normalized.includes("昼ごはん") ||
+    normalized.includes("食べたい");
   
   return {
     wantsRelax: relaxKeywords.some(kw => normalized.includes(kw)),
     wantsFood: foodKeywords.some(kw => normalized.includes(kw)),
     wantsCafe: cafeKeywords.some(kw => normalized.includes(kw)),
     wantsShorter: shorterKeywords.some(kw => normalized.includes(kw)),
+    wantsLunch,
   };
 }
 
@@ -97,11 +109,36 @@ function reorganizeSpots(
 }
 
 /**
- * Google Places APIでスポットを検索
+ * 2点間の距離を計算（ハーバーサイン公式）
  */
-async function searchPlaces(
-  location: { lat: number; lng: number },
-  type: "restaurant" | "cafe"
+function calculateDistance(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 6371000; // 地球の半径（メートル）
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+/**
+ * Google Places APIでスポットを検索（ランチ用）
+ * - nearbySearchを使用
+ * - keyword="ランチ 米沢牛"
+ * - radius=2000m
+ * - 評価4.0以上、距離が近い順で1件選定
+ */
+async function searchLunchPlaces(
+  baseLocation: { lat: number; lng: number }
 ): Promise<GooglePlace | null> {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
   if (!apiKey) {
@@ -111,10 +148,13 @@ async function searchPlaces(
 
   try {
     const url = new URL("https://maps.googleapis.com/maps/api/place/nearbysearch/json");
-    url.searchParams.set("location", `${location.lat},${location.lng}`);
-    url.searchParams.set("radius", "800"); // 800m
-    url.searchParams.set("type", type);
+    url.searchParams.set("location", `${baseLocation.lat},${baseLocation.lng}`);
+    url.searchParams.set("radius", "2000"); // 2000m固定
+    url.searchParams.set("keyword", "ランチ 米沢牛");
+    url.searchParams.set("type", "restaurant");
     url.searchParams.set("key", apiKey);
+
+    console.log("[koyo-edit] Searching lunch places near:", baseLocation);
 
     const response = await fetch(url.toString());
     if (!response.ok) {
@@ -128,8 +168,43 @@ async function searchPlaces(
       return null;
     }
 
-    // 最初の1件を返す（maxResults = 5だが、1件のみ採用）
-    return data.results[0];
+    console.log("[koyo-edit] Found places:", data.results.length);
+
+    // 距離を計算して追加
+    const placesWithDistance = data.results.map((place) => ({
+      ...place,
+      distance: calculateDistance(
+        baseLocation.lat,
+        baseLocation.lng,
+        place.geometry.location.lat,
+        place.geometry.location.lng
+      ),
+    }));
+
+    // 評価4.0以上でフィルタ
+    const candidates = placesWithDistance.filter((p) => (p.rating ?? 0) >= 4.0);
+
+    if (candidates.length === 0) {
+      console.warn("[koyo-edit] No places with rating >= 4.0");
+      return null;
+    }
+
+    // 評価が高い順、同等なら距離が近い順でソート
+    candidates.sort((a, b) => {
+      if (b.rating !== a.rating) {
+        return (b.rating ?? 0) - (a.rating ?? 0);
+      }
+      return (a.distance ?? Infinity) - (b.distance ?? Infinity);
+    });
+
+    const selectedPlace = candidates[0];
+    console.log("[koyo-edit] Selected place:", {
+      name: selectedPlace.name,
+      rating: selectedPlace.rating,
+      distance: selectedPlace.distance,
+    });
+
+    return selectedPlace;
   } catch (error) {
     console.error("[koyo-edit] Google Places API error:", error);
     return null;
@@ -169,6 +244,11 @@ function generateHospitalityMessage(
   spotsReorganized: boolean,
   placeAdded: boolean
 ): string {
+  // ランチ系発話でPlaces APIが発動した場合の固定メッセージ
+  if (placeAdded && intent.wantsLunch) {
+    return "途中でランチをご希望とのことでしたので、\nルートの途中に立ち寄りやすいお店を1か所だけ追加しました。";
+  }
+  
   if (!spotsChanged && !spotsReorganized && !placeAdded) {
     return "ルートを確認いたしました。";
   }
@@ -217,24 +297,39 @@ export async function POST(
       pace: intent.wantsRelax ? "relax" : "normal",
     };
     
-    // Google Places API呼び出し（条件: wantsFood/wantsCafe && bCallCount < 1）
+    // Google Places API呼び出し（条件: wantsLunch && bCallCount === 0）
     let placeAdded = false;
     let finalSpots = [...routePlan.spots];
     let updatedBCallCount = routePlan.bCallCount;
     
-    if ((intent.wantsFood || intent.wantsCafe) && routePlan.bCallCount < 1) {
-      const placeType = intent.wantsFood ? "restaurant" : "cafe";
-      const place = await searchPlaces(routePlan.origin, placeType);
-      
-      if (place) {
-        const placeSpot = convertPlaceToSpot(place);
-        // originの直後に挿入
-        finalSpots = [placeSpot, ...finalSpots];
-        updatedBCallCount = routePlan.bCallCount + 1;
-        placeAdded = true;
-        console.log("[koyo-edit] Added place from Google Places API:", place.name);
+    if (intent.wantsLunch && routePlan.bCallCount === 0) {
+      // waypointsの中間地点を基準に検索
+      if (routePlan.spots.length > 0) {
+        const baseSpotIndex = Math.floor(routePlan.spots.length / 2);
+        const baseSpot = routePlan.spots[baseSpotIndex];
+        
+        if (baseSpot.lat != null && baseSpot.lng != null) {
+          const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+          console.log("[koyo-edit] Base location for lunch search:", baseLocation, "from spot index:", baseSpotIndex);
+          
+          const place = await searchLunchPlaces(baseLocation);
+          
+          if (place) {
+            const placeSpot = convertPlaceToSpot(place);
+            // spots配列の中間に挿入
+            const insertIndex = Math.floor(finalSpots.length / 2);
+            finalSpots.splice(insertIndex, 0, placeSpot);
+            updatedBCallCount = routePlan.bCallCount + 1;
+            placeAdded = true;
+            console.log("[koyo-edit] Added lunch place at index:", insertIndex, "name:", place.name);
+          } else {
+            console.log("[koyo-edit] No lunch place found from Google Places API");
+          }
+        } else {
+          console.warn("[koyo-edit] Base spot has no coordinates");
+        }
       } else {
-        console.log("[koyo-edit] No place found from Google Places API");
+        console.warn("[koyo-edit] No spots in routePlan, cannot determine base location");
       }
     }
     

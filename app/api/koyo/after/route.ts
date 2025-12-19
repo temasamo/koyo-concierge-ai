@@ -5,6 +5,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
+import { detectLunchIntent, searchLunchPlaces, convertPlaceToSpot } from "../_utils/places";
 import { resolveOriginFromFreeInput } from "../before/_utils/originResolver";
 import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
 import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
@@ -404,6 +405,7 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
           drive_minutes: matched.drive_time
             ? parseInt(matched.drive_time.match(/\d+/)?.[0] || "0")
             : null,
+          source: "db", // DBスポットであることを明示
         });
         usedSpotIds.add(matched.id);
         console.log(`[koyo-after] Matched spot: "${aiSpot.name || aiSpot.id}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
@@ -732,9 +734,42 @@ F. その他
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
+    let placesApiFailed = false;
 
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
+
+      // ランチ系発話を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
+      if (matchedSpots && matchedSpots.length > 0) {
+        const wantsLunch = detectLunchIntent(userMessage);
+
+        if (wantsLunch) {
+          // waypointsの中間地点を基準に検索
+          const baseSpotIndex = Math.floor(matchedSpots.length / 2);
+          const baseSpot = matchedSpots[baseSpotIndex];
+
+          if (baseSpot.lat != null && baseSpot.lng != null) {
+            const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+            console.log("[koyo-after] Lunch intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex);
+
+            const place = await searchLunchPlaces(baseLocation);
+
+            if (place) {
+              const lunchSpot = convertPlaceToSpot(place);
+              // spots配列の中間に挿入
+              const insertIndex = Math.floor(matchedSpots.length / 2);
+              matchedSpots.splice(insertIndex, 0, lunchSpot);
+              console.log("[koyo-after] Added lunch place at index:", insertIndex, "name:", place.name);
+            } else {
+              placesApiFailed = true;
+              console.log("[koyo-after] No lunch place found from Google Places API");
+            }
+          } else {
+            placesApiFailed = true;
+            console.warn("[koyo-after] Base spot has no coordinates");
+          }
+        }
+      }
 
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
       if (matchedSpots && matchedSpots.length > 0) {
@@ -758,7 +793,12 @@ F. その他
     }
 
     // replyからJSON部分を除去してクリーンなメッセージにする
-    const cleanReply = cleanReplyMessage(reply);
+    let cleanReply = cleanReplyMessage(reply);
+
+    // Places API失敗時のメッセージを追加
+    if (placesApiFailed && detectLunchIntent(userMessage)) {
+      cleanReply += "\n\n申し訳ありません。周辺で条件に合うランチスポットが見つからなかったため、観光中心のプランをご提案しています。";
+    }
 
     // レスポンスを構築
     const response: any = {
