@@ -294,7 +294,7 @@ export async function POST(
     console.log("[koyo-edit] Intent:", intent);
     
     // constraints更新
-    const updatedConstraints = {
+    const updatedConstraints: RoutePlan["constraints"] = {
       ...routePlan.constraints,
       pace: intent.wantsRelax ? "relax" : "normal",
     };
