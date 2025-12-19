@@ -230,6 +230,7 @@ function convertPlaceToSpot(place: GooglePlace): RoutePlan["spots"][0] {
     tags: null,
     drive_minutes: null,
     stayMinutes: null,
+    source: "places", // Places API由来であることを明示
     placeId: place.place_id,
     isFromPlaces: true,
   };
