@@ -274,9 +274,10 @@ function generateHospitalityMessage(
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { mode: string } }
+  { params }: { params: Promise<{ mode: string }> }
 ) {
   try {
+    const { mode } = await params;
     const body = (await req.json()) as EditRequestBody;
     const { routePlan, userMessage } = body;
     
