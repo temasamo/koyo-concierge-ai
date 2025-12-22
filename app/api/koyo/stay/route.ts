@@ -5,7 +5,9 @@ import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
-import { detectLunchIntent, detectMealStopIntent, detectStopIntent, searchLunchPlaces, searchMealPlaces, convertPlaceToSpot } from "../_utils/places";
+import { integratePlaces } from "../_utils/places";
+import { detectStopIntent } from "../_utils/detectStopIntent";
+import type { StopIntent } from "@/types/route";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -36,35 +38,31 @@ function getSupabaseClient() {
 
 /**
  * ユーザーの質問が施設案内に関するものかを判定する関数
+ * 利用・運用情報の問い合わせのみを対象とする
+ * （外出スポットの意図は detectStopIntent で判定）
  */
 function isFacilityQuery(userMessage: string): boolean {
   const normalizedMessage = userMessage.toLowerCase();
   
-  const facilityKeywords = [
-    "温泉",
-    "大浴場",
-    "展望",
-    "サウナ",
-    "売店",
-    "カフェ",
-    "バー",
-    "利用",
-    "使える",
-    "入れる",
+  // 利用情報系キーワードのみ（外出意図と区別するため）
+  const facilityOnlyKeywords = [
+    "利用時間",
     "何時",
     "何時まで",
     "営業",
-    "開いてる",
-    "開いて",
-    "利用時間",
+    "使える",
     "利用可能",
     "貸切",
-    "風呂",
+    "大浴場",
+    "サウナ",
     "ルーム",
     "ラウンジ",
+    "利用",
+    "開いてる",
+    "開いて",
   ];
   
-  return facilityKeywords.some(keyword => normalizedMessage.includes(keyword));
+  return facilityOnlyKeywords.some(keyword => normalizedMessage.includes(keyword));
 }
 
 /**
@@ -653,19 +651,12 @@ async function getSystemPrompt(): Promise<string> {
 - スポット名は必ず Supabase の登録名を正確に使用すること
 - ユーザーの空き時間に合わせて適切なスポット数を提案すること
 
-【重要：飲食店の案内について】
-飲食に関する提案を行う際は、実在する店舗名・施設名などの
-固有名詞を絶対に出さないでください。
-
-「この流れの中で立ち寄りやすい場所で」
-「旅の途中で温かいラーメンを楽しむ」
-など、抽象的な表現のみを使用してください。
-
-実際の店舗選定・表示はシステム側で行います。
-
-NG例：
-・「◯◯でラーメン」
-・「食事処△△」
+【重要：飲食・休憩スポットについて】
+- 飲食店・カフェ・温泉・売店などの固有名詞（店名）は出さない
+- 「この旅の流れの中で立ち寄りやすい場所で」
+  「温かいラーメンを楽しむ」
+  など抽象的な表現を使用する
+- NG例：「◯◯でラーメン」「食事処△△」
 
 --------------------------------------------------
 【安全配慮（必須）】
@@ -998,6 +989,38 @@ function cleanReplyMessage(reply: string): string {
 }
 
 /**
+ * Places API検索結果が0件の場合、reply内の断定表現を抽象表現に置き換える
+ * フェーズ1.5: AIが嘘をつかないように、事実に基づかない断定表現を弱める
+ */
+function sanitizeReplyForFailedPlaces(
+  reply: string,
+  stopIntent: StopIntent | null
+): string {
+  if (!stopIntent || stopIntent.type !== "lunch") {
+    // lunch以外は対象外（フェーズ1.5ではlunchのみ）
+    return reply;
+  }
+  
+  let sanitized = reply;
+  
+  // 山形牛・米沢牛などの特定食材名の断定表現を削除
+  sanitized = sanitized.replace(/山形牛[^。]*。/g, "旅の流れに合わせて、周辺で食事の時間をお取りください。");
+  sanitized = sanitized.replace(/米沢牛[^。]*。/g, "旅の流れに合わせて、周辺で食事の時間をお取りください。");
+  
+  // 名物・特定料理名の断定表現を削除
+  sanitized = sanitized.replace(/名物[^。]*。/g, "地元ならではの食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/芋煮[^。]*。/g, "地元ならではの温かい食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/ラーメン[^。]*。/g, "旅の流れに合わせて、温かい食事の時間をお取りください。");
+  sanitized = sanitized.replace(/そば[^。]*。/g, "旅の流れに合わせて、食事の時間をお取りください。");
+  
+  // 特定体験の断定表現を弱める
+  sanitized = sanitized.replace(/地元の味[^。]*。/g, "地元ならではの食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/〇〇[^。]*。/g, "周辺で立ち寄りやすい食事スポットで、旅の流れに合わせて食事の時間をお取りください。");
+  
+  return sanitized;
+}
+
+/**
  * 施設案内AIのハンドラー関数
  */
 async function handleFacilityOperation(
@@ -1207,53 +1230,17 @@ async function handleStayPlanner(
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
     let placesApiFailed = false;
+    let stopIntent: ReturnType<typeof detectStopIntent> = null;
     
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
       
-      // ランチ系発話を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
+      // 途中立ち寄り意図を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
       if (matchedSpots && matchedSpots.length > 0) {
-        const stopIntent = detectStopIntent(userMessage);
-        
-        if (stopIntent) {
-          // 挿入位置の決定
-          let baseSpotIndex: number;
-          if (stopIntent.insertAfterSpotIndex !== undefined) {
-            baseSpotIndex = stopIntent.insertAfterSpotIndex;
-          } else {
-            // デフォルト: spotsが2つ以上あるならindex=1、1つしかないならindex=0
-            baseSpotIndex = matchedSpots.length >= 2 ? 1 : 0;
-          }
-          
-          // 範囲チェック
-          if (baseSpotIndex < 0 || baseSpotIndex >= matchedSpots.length) {
-            console.warn("[koyo-stay] Invalid baseSpotIndex:", baseSpotIndex, "spots length:", matchedSpots.length);
-            placesApiFailed = true;
-          } else {
-            const baseSpot = matchedSpots[baseSpotIndex];
-          
-          if (baseSpot.lat != null && baseSpot.lng != null) {
-            const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
-            console.log("[koyo-stay] Meal intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex, "keyword:", stopIntent.keyword || stopIntent.fallbackKeyword);
-            
-            const place = await searchMealPlaces(baseLocation, stopIntent);
-            
-            if (place) {
-              const lunchSpot = convertPlaceToSpot(place);
-              // spots配列の該当位置の直後に挿入
-              const insertIndex = baseSpotIndex + 1;
-              matchedSpots.splice(insertIndex, 0, lunchSpot);
-              console.log("[koyo-stay] Added meal place at index:", insertIndex, "name:", place.name, "foodCategory:", stopIntent.foodCategory);
-            } else {
-              placesApiFailed = true;
-              console.log("[koyo-stay] No meal place found from Google Places API");
-            }
-          } else {
-            placesApiFailed = true;
-            console.warn("[koyo-stay] Base spot has no coordinates");
-          }
-          }
-        }
+        stopIntent = detectStopIntent(userMessage);
+        const result = await integratePlaces(matchedSpots, stopIntent);
+        matchedSpots = result.spots;
+        placesApiFailed = result.placesApiFailed;
       }
       
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
@@ -1279,6 +1266,11 @@ async function handleStayPlanner(
     
     // replyからJSON部分を除去してクリーンなメッセージにする
     let cleanReply = cleanReplyMessage(reply);
+    
+    // Places API検索結果が0件の場合、断定表現を抽象表現に置き換える
+    if (placesApiFailed && stopIntent) {
+      cleanReply = sanitizeReplyForFailedPlaces(cleanReply, stopIntent);
+    }
     
     // Places API結果はreplyに追記しない（フェーズ1: AIは店名を知らない）
     
@@ -1404,16 +1396,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ルーティング: キーワードベースで施設案内かプラン提案かを判定
-    const isFacility = isFacilityQuery(userMessage);
+    // ルーティング: detectStopIntent を最優先で評価（外出意図の判定）
+    const stopIntent = detectStopIntent(userMessage);
     console.log("[koyo-stay] User message:", userMessage);
-    console.log("[koyo-stay] Is facility query?", isFacility);
+    console.log("[koyo-stay] StopIntent detected:", stopIntent);
     
-    if (isFacility) {
+    if (stopIntent) {
+      // 外出プランとして処理（温泉・ランチ・カフェなど）
+      console.log("[koyo-stay] ⭐ Routing to Stay Planner AI (outdoor intent detected)");
+      return handleStayPlanner(userMessages);
+    } else if (isFacilityQuery(userMessage)) {
+      // 館内施設案内（利用情報の問い合わせ）
       console.log("[koyo-stay] ⭐ Routing to Facility Operation AI");
       return handleFacilityOperation(userMessages, gender);
     } else {
-      console.log("[koyo-stay] ⭐ Routing to Stay Planner AI");
+      // デフォルトは外出プラン
+      console.log("[koyo-stay] ⭐ Routing to Stay Planner AI (default)");
       return handleStayPlanner(userMessages);
     }
   } catch (error: any) {

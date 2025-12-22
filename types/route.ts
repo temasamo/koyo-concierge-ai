@@ -25,14 +25,17 @@ export type RoutePoint = {
 export type KoyoMode = "before" | "stay" | "after";
 
 // StopType: 途中立ち寄りスポットの種類（将来拡張用）
-export type StopType = "meal" | "cafe" | "rest" | "onsen" | "shopping";
+// meal/shopping: 旧（後方互換）
+// lunch/shop: 新（フェーズ1.5以降の正式）
+export type StopType = "meal" | "lunch" | "cafe" | "rest" | "onsen" | "shopping" | "shop";
 
 // StopIntent: 途中立ち寄りスポットの検出結果
 export type StopIntent = {
   type: StopType;
-  foodCategory?: string; // 意味レベル（例: "ラーメン", "芋煮"）- ユーザー意図
-  keyword?: string; // Places API用（既存・後方互換）- 実検索ワード
-  fallbackKeyword: string; // デフォルトキーワード（例: "ランチ"）
+  foodCategory?: string; // lunch専用（例: "ラーメン", "芋煮"）- ユーザー意図
+  fallbackKeyword: string; // Places APIフォールバック用（例: "ランチ", "カフェ"）
+  // 旧仕様（使用禁止・互換用）
+  keyword?: string; // 後方互換のため残すが、新コードでは使用しない
   preferenceTags?: string[]; // 好みのタグ（例: ["温かい", "冬向き"]）- フェーズ1では未使用
   placeType?: string; // Google Places 'type'（例: "restaurant"）
   radius?: number; // 検索半径（メートル、デフォルト: 2000）

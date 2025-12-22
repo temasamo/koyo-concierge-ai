@@ -5,7 +5,8 @@ import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
-import { detectLunchIntent, detectMealStopIntent, detectStopIntent, searchLunchPlaces, searchMealPlaces, convertPlaceToSpot } from "../_utils/places";
+import { integratePlaces } from "../_utils/places";
+import { detectStopIntent } from "../_utils/detectStopIntent";
 import { resolveOriginFromFreeInput } from "../before/_utils/originResolver";
 import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
 import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
@@ -114,19 +115,12 @@ async function getSystemPrompt(): Promise<string> {
 - スポット名は必ず Supabase の登録名を正確に使用すること
 - 帰宅途中の「負担の少ないルート上のスポット」を優先すること
 
-【重要：飲食店の案内について】
-飲食に関する提案を行う際は、実在する店舗名・施設名などの
-固有名詞を絶対に出さないでください。
-
-「この流れの中で立ち寄りやすい場所で」
-「旅の途中で温かいラーメンを楽しむ」
-など、抽象的な表現のみを使用してください。
-
-実際の店舗選定・表示はシステム側で行います。
-
-NG例：
-・「◯◯でラーメン」
-・「食事処△△」
+【重要：飲食・休憩スポットについて】
+- 飲食店・カフェ・温泉・売店などの固有名詞（店名）は出さない
+- 「この旅の流れの中で立ち寄りやすい場所で」
+  「温かいラーメンを楽しむ」
+  など抽象的な表現を使用する
+- NG例：「◯◯でラーメン」「食事処△△」
 
 【季節ルール】
 - 冬（12〜3月）は安全配慮の文言を必ず追加する。
@@ -753,49 +747,12 @@ F. その他
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
 
-      // ランチ系発話を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
+      // 途中立ち寄り意図を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
       if (matchedSpots && matchedSpots.length > 0) {
         const stopIntent = detectStopIntent(userMessage);
-
-        if (stopIntent) {
-          // 挿入位置の決定
-          let baseSpotIndex: number;
-          if (stopIntent.insertAfterSpotIndex !== undefined) {
-            baseSpotIndex = stopIntent.insertAfterSpotIndex;
-          } else {
-            // デフォルト: spotsが2つ以上あるならindex=1、1つしかないならindex=0
-            baseSpotIndex = matchedSpots.length >= 2 ? 1 : 0;
-          }
-          
-          // 範囲チェック
-          if (baseSpotIndex < 0 || baseSpotIndex >= matchedSpots.length) {
-            console.warn("[koyo-after] Invalid baseSpotIndex:", baseSpotIndex, "spots length:", matchedSpots.length);
-            placesApiFailed = true;
-          } else {
-            const baseSpot = matchedSpots[baseSpotIndex];
-
-          if (baseSpot.lat != null && baseSpot.lng != null) {
-            const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
-            console.log("[koyo-after] Meal intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex, "keyword:", stopIntent.keyword || stopIntent.fallbackKeyword);
-
-            const place = await searchMealPlaces(baseLocation, stopIntent);
-
-            if (place) {
-              const lunchSpot = convertPlaceToSpot(place);
-              // spots配列の該当位置の直後に挿入
-              const insertIndex = baseSpotIndex + 1;
-              matchedSpots.splice(insertIndex, 0, lunchSpot);
-              console.log("[koyo-after] Added meal place at index:", insertIndex, "name:", place.name, "foodCategory:", stopIntent.foodCategory);
-            } else {
-              placesApiFailed = true;
-              console.log("[koyo-after] No meal place found from Google Places API");
-            }
-          } else {
-            placesApiFailed = true;
-            console.warn("[koyo-after] Base spot has no coordinates");
-          }
-          }
-        }
+        const result = await integratePlaces(matchedSpots, stopIntent);
+        matchedSpots = result.spots;
+        placesApiFailed = result.placesApiFailed;
       }
 
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）

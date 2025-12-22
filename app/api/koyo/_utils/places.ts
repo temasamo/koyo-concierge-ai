@@ -2,6 +2,7 @@
 // Google Places API関連の共通ユーティリティ
 
 import type { StopIntent, StopType } from "@/types/route";
+import { detectStopIntent as detectStopIntentFromUtils } from "./detectStopIntent";
 
 // Google Places APIの型定義
 type GooglePlace = {
@@ -41,63 +42,10 @@ export function detectLunchIntent(message: string): boolean {
 }
 
 /**
- * 途中立ち寄り意図を検出（StopIntent生成）- 将来の正統後継
- * フェーズ1では lunch (meal) のみ対応
- * - 明示: "ランチ", "昼食", "お昼", "昼ごはん", "昼飯", "食べたい", "ご飯", "食事"
- * - 食要求: "米沢牛", "山形牛", "芋煮", "いも煮", "そば", "ラーメン", "冷やしラーメン"
+ * 途中立ち寄り意図を検出（StopIntent生成）- 汎用版へのエクスポート
+ * detectStopIntent.tsから再エクスポート（後方互換性のため）
  */
-export function detectStopIntent(message: string): StopIntent | null {
-  const normalized = message.toLowerCase();
-  
-  // 明示キーワード
-  const explicitKeywords = [
-    "ランチ",
-    "昼食",
-    "お昼",
-    "昼ごはん",
-    "昼飯",
-    "食べたい",
-    "ご飯",
-    "食事",
-  ];
-  
-  // 食要求キーワード（抽出対象）
-  const FOOD_KEYWORDS = [
-    { foodCategory: "ラーメン", patterns: ["ラーメン", "らーめん"] },
-    { foodCategory: "そば", patterns: ["そば", "蕎麦"] },
-    { foodCategory: "芋煮", patterns: ["芋煮", "いも煮", "いもに", "imoni"] },
-    { foodCategory: "米沢牛", patterns: ["米沢牛", "よねざわぎゅう"] },
-    { foodCategory: "山形牛", patterns: ["山形牛", "やまがたぎゅう"] },
-    { foodCategory: "冷やしラーメン", patterns: ["冷やしラーメン", "冷やしらーめん", "ひやしらーめん"] },
-  ];
-  
-  // 明示キーワードの検出
-  const hasExplicitIntent = explicitKeywords.some((k) => normalized.includes(k));
-  
-  // 食要求キーワードの抽出
-  let extractedFoodCategory: string | undefined;
-  for (const { foodCategory, patterns } of FOOD_KEYWORDS) {
-    if (patterns.some((p) => normalized.includes(p))) {
-      extractedFoodCategory = foodCategory;
-      break; // 最初にマッチしたものを採用
-    }
-  }
-  
-  // 明示または食要求があればStopIntentを生成
-  if (hasExplicitIntent || extractedFoodCategory) {
-    return {
-      type: "meal",
-      foodCategory: extractedFoodCategory,
-      fallbackKeyword: "ランチ",
-      placeType: "restaurant",
-      radius: 2000,
-      // preferenceTagsはフェーズ1では未使用
-      // insertAfterSpotIndexは呼び出し側で決定
-    };
-  }
-  
-  return null;
-}
+export { detectStopIntentFromUtils as detectStopIntent };
 
 /**
  * 食事系の途中立ち寄り意図を検出（StopIntent生成）- 後方互換性のため残す
@@ -178,14 +126,27 @@ function calculateDistance(
 }
 
 /**
- * Google Places APIで食事スポットを検索（動的keyword対応）
+ * Google Places APIのtypeマッピング
+ */
+const PLACE_TYPE_MAP: Record<StopType, string> = {
+  lunch: "restaurant",
+  meal: "restaurant",     // 互換
+  cafe: "cafe",
+  rest: "park",
+  onsen: "establishment", // spaは国・地域差が大きいためestablishmentを使用
+  shop: "store",
+  shopping: "store",      // 互換
+};
+
+/**
+ * Google Places APIでスポットを検索（汎用版）
  * - nearbySearchを使用
- * - keywordはStopIntentから取得（動的）
+ * - keywordはStopIntentから取得（優先順位: foodCategory → keyword → fallbackKeyword）
  * - radiusはStopIntentから取得（デフォルト2000m）
- * - typeはStopIntentから取得（デフォルト"restaurant"）
+ * - typeはStopIntentから取得（StopTypeに基づいて動的決定）
  * - 評価4.0以上、距離が近い順で1件選定
  */
-export async function searchMealPlaces(
+export async function searchPlaces(
   baseLocation: { lat: number; lng: number },
   stopIntent: StopIntent
 ): Promise<GooglePlace | null> {
@@ -204,7 +165,8 @@ export async function searchMealPlaces(
     stopIntent.keyword ??
     stopIntent.fallbackKeyword;
   const radius = stopIntent.radius || 2000;
-  const placeType = stopIntent.placeType || "restaurant";
+  // placeTypeはStopTypeから動的に決定（stopIntent.placeTypeがあれば優先）
+  const placeType = stopIntent.placeType || PLACE_TYPE_MAP[stopIntent.type] || "establishment";
 
   try {
     const url = new URL("https://maps.googleapis.com/maps/api/place/nearbysearch/json");
@@ -214,7 +176,7 @@ export async function searchMealPlaces(
     url.searchParams.set("type", placeType);
     url.searchParams.set("key", apiKey);
 
-    console.log("[koyo-places] Searching meal places near:", baseLocation, "keyword:", keyword);
+    console.log("[koyo-places] Searching places near:", baseLocation, "type:", stopIntent.type, "keyword:", keyword);
 
     const response = await fetch(url.toString());
     if (!response.ok) {
@@ -272,8 +234,19 @@ export async function searchMealPlaces(
 }
 
 /**
+ * Google Places APIで食事スポットを検索（後方互換性のため残す）
+ * @deprecated searchPlacesを使用してください
+ */
+export async function searchMealPlaces(
+  baseLocation: { lat: number; lng: number },
+  stopIntent: StopIntent
+): Promise<GooglePlace | null> {
+  return searchPlaces(baseLocation, stopIntent);
+}
+
+/**
  * Google Places APIでランチスポットを検索（後方互換性のため残す）
- * @deprecated searchMealPlacesを使用してください
+ * @deprecated searchPlacesを使用してください
  */
 export async function searchLunchPlaces(
   baseLocation: { lat: number; lng: number }
@@ -284,7 +257,7 @@ export async function searchLunchPlaces(
     placeType: "restaurant",
     radius: 2000,
   };
-  return searchMealPlaces(baseLocation, defaultStopIntent);
+  return searchPlaces(baseLocation, defaultStopIntent);
 }
 
 /**
@@ -315,55 +288,63 @@ export function convertPlaceToSpot(place: GooglePlace): {
 }
 
 /**
- * ランチ系発話を検出してPlaces APIを呼び出し、spots配列に統合
- * フェーズ1: AIは店名を知らない。ルートにstopを挿入する責務のみ。
+ * StopIntentに基づいてPlaces APIを呼び出し、spots配列に統合（汎用版）
+ * フェーズ1.5: AIは店名を知らない。ルートにstopを挿入する責務のみ。
  * @param spots 既存のspots配列
- * @param userMessage ユーザーメッセージ
+ * @param stopIntent StopIntent（nullの場合は何もしない）
  * @returns { spots: 統合後のspots配列, placesApiFailed: Places APIが失敗したか }
  */
-export async function integrateLunchPlace(
+export async function integratePlaces(
   spots: any[],
-  userMessage: string
+  stopIntent: StopIntent | null
 ): Promise<{ spots: any[]; placesApiFailed: boolean }> {
   if (!spots || spots.length === 0) {
     return { spots, placesApiFailed: false };
   }
 
-  const stopIntent = detectStopIntent(userMessage);
+  if (!stopIntent) {
+    // DBスポットにsourceフィールドを追加
+    spots.forEach((spot) => {
+      if (!spot.source) {
+        spot.source = "db";
+      }
+    });
+    return { spots, placesApiFailed: false };
+  }
+
   let placesApiFailed = false;
 
-  if (stopIntent) {
-    // 挿入位置の決定
-    let baseSpotIndex: number;
-    if (stopIntent.insertAfterSpotIndex !== undefined) {
-      baseSpotIndex = stopIntent.insertAfterSpotIndex;
-    } else {
-      // デフォルト: spotsが2つ以上あるならindex=1、1つしかないならindex=0
-      baseSpotIndex = spots.length >= 2 ? 1 : 0;
-    }
-    
-    const baseSpot = spots[baseSpotIndex];
-    
-    if (baseSpot.lat != null && baseSpot.lng != null) {
-      const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
-      console.log("[koyo-places] Meal intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex, "keyword:", stopIntent.keyword || stopIntent.fallbackKeyword);
+  // 挿入位置の決定
+  let baseSpotIndex: number;
+  if (stopIntent.insertAfterSpotIndex !== undefined) {
+    baseSpotIndex = stopIntent.insertAfterSpotIndex;
+  } else {
+    // デフォルト: spotsが2つ以上あるなら中間位置、1つしかないならindex=0
+    baseSpotIndex = spots.length >= 2 ? Math.floor(spots.length / 2) : 0;
+  }
+  
+  const baseSpot = spots[baseSpotIndex];
+  
+  if (baseSpot.lat != null && baseSpot.lng != null) {
+    const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+    const keyword = stopIntent.foodCategory ?? stopIntent.keyword ?? stopIntent.fallbackKeyword;
+    console.log("[koyo-places] Stop intent detected:", stopIntent.type, "searching places near:", baseLocation, "from spot index:", baseSpotIndex, "keyword:", keyword);
 
-      const place = await searchMealPlaces(baseLocation, stopIntent);
+    const place = await searchPlaces(baseLocation, stopIntent);
 
-      if (place) {
-        const lunchSpot = convertPlaceToSpot(place);
-        // spots配列の該当位置の直後に挿入
-        const insertIndex = baseSpotIndex + 1;
-        spots.splice(insertIndex, 0, lunchSpot);
-        console.log("[koyo-places] Added meal place at index:", insertIndex, "name:", place.name, "foodCategory:", stopIntent.foodCategory);
-      } else {
-        placesApiFailed = true;
-        console.log("[koyo-places] No meal place found from Google Places API");
-      }
+    if (place) {
+      const newSpot = convertPlaceToSpot(place);
+      // spots配列の該当位置の直後に挿入
+      const insertIndex = baseSpotIndex + 1;
+      spots.splice(insertIndex, 0, newSpot);
+      console.log("[koyo-places] Added place at index:", insertIndex, "name:", place.name, "type:", stopIntent.type, "foodCategory:", stopIntent.foodCategory);
     } else {
       placesApiFailed = true;
-      console.warn("[koyo-places] Base spot has no coordinates");
+      console.log("[koyo-places] No place found from Google Places API for type:", stopIntent.type);
     }
+  } else {
+    placesApiFailed = true;
+    console.warn("[koyo-places] Base spot has no coordinates");
   }
 
   // DBスポットにsourceフィールドを追加
@@ -374,5 +355,17 @@ export async function integrateLunchPlace(
   });
 
   return { spots, placesApiFailed };
+}
+
+/**
+ * ランチ系発話を検出してPlaces APIを呼び出し、spots配列に統合（後方互換性のため残す）
+ * @deprecated integratePlacesを使用してください
+ */
+export async function integrateLunchPlace(
+  spots: any[],
+  userMessage: string
+): Promise<{ spots: any[]; placesApiFailed: boolean }> {
+  const stopIntent = detectStopIntentFromUtils(userMessage);
+  return integratePlaces(spots, stopIntent);
 }
 

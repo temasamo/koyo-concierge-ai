@@ -12,7 +12,8 @@ import type { PrefectureKey } from "./_constants/prefEntryPoints";
 import type { OriginInfo } from "@/store/spots";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
-import { detectLunchIntent, detectMealStopIntent, detectStopIntent, searchLunchPlaces, searchMealPlaces, convertPlaceToSpot, integrateLunchPlace } from "../_utils/places";
+import { detectStopIntent, integratePlaces } from "../_utils/places";
+import { detectStopIntent as detectStopIntentFromUtils } from "../_utils/detectStopIntent";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -124,19 +125,12 @@ ${spotListText}
 - 架空スポットの生成は厳禁
 - スポット名は必ず Supabase の登録名を正確に使用すること
 
-【重要：飲食店の案内について】
-飲食に関する提案を行う際は、実在する店舗名・施設名などの
-固有名詞を絶対に出さないでください。
-
-「この流れの中で立ち寄りやすい場所で」
-「旅の途中で温かいラーメンを楽しむ」
-など、抽象的な表現のみを使用してください。
-
-実際の店舗選定・表示はシステム側で行います。
-
-NG例：
-・「◯◯でラーメン」
-・「食事処△△」
+【重要：飲食・休憩スポットについて】
+- 飲食店・カフェ・温泉・売店などの固有名詞（店名）は出さない
+- 「この旅の流れの中で立ち寄りやすい場所で」
+  「温かいラーメンを楽しむ」
+  など抽象的な表現を使用する
+- NG例：「◯◯でラーメン」「食事処△△」
 
 --------------------------------------------------
 【重要：出発地が"自由入力（G）"の場合のロジック】
@@ -576,11 +570,12 @@ export async function POST(req: NextRequest) {
           userMessage,
         });
 
-        // Places API統合（ランチ系発話の場合）
+        // Places API統合（途中立ち寄り意図検出）
         let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
         let placesApiFailed = false;
         if (finalSpots.length > 0) {
-          const result = await integrateLunchPlace(finalSpots, userMessage);
+          const stopIntent = detectStopIntentFromUtils(userMessage);
+          const result = await integratePlaces(finalSpots, stopIntent);
           finalSpots = result.spots;
           placesApiFailed = result.placesApiFailed;
         }
@@ -684,11 +679,12 @@ G. その他（自由入力）
             userMessage,
           });
 
-          // Places API統合（ランチ系発話の場合）
+          // Places API統合（途中立ち寄り意図検出）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
           let placesApiFailed = false;
           if (finalSpots.length > 0) {
-            const result = await integrateLunchPlace(finalSpots, userMessage);
+            const stopIntent = detectStopIntentFromUtils(userMessage);
+            const result = await integratePlaces(finalSpots, stopIntent);
             finalSpots = result.spots;
             placesApiFailed = result.placesApiFailed;
           }
@@ -749,11 +745,12 @@ G. その他（自由入力）
             prefecture: resolution.prefecture,
           });
 
-          // Places API統合（ランチ系発話の場合）
+          // Places API統合（途中立ち寄り意図検出）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
           let placesApiFailed = false;
           if (finalSpots.length > 0) {
-            const result = await integrateLunchPlace(finalSpots, userMessage);
+            const stopIntent = detectStopIntentFromUtils(userMessage);
+            const result = await integratePlaces(finalSpots, stopIntent);
             finalSpots = result.spots;
             placesApiFailed = result.placesApiFailed;
           }
