@@ -5,7 +5,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
-import { detectLunchIntent, searchLunchPlaces, convertPlaceToSpot } from "../_utils/places";
+import { detectLunchIntent, detectMealStopIntent, detectStopIntent, searchLunchPlaces, searchMealPlaces, convertPlaceToSpot } from "../_utils/places";
 import { resolveOriginFromFreeInput } from "../before/_utils/originResolver";
 import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
 import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
@@ -113,6 +113,20 @@ async function getSystemPrompt(): Promise<string> {
 - 架空スポットの生成は厳禁
 - スポット名は必ず Supabase の登録名を正確に使用すること
 - 帰宅途中の「負担の少ないルート上のスポット」を優先すること
+
+【重要：飲食店の案内について】
+飲食に関する提案を行う際は、実在する店舗名・施設名などの
+固有名詞を絶対に出さないでください。
+
+「この流れの中で立ち寄りやすい場所で」
+「旅の途中で温かいラーメンを楽しむ」
+など、抽象的な表現のみを使用してください。
+
+実際の店舗選定・表示はシステム側で行います。
+
+NG例：
+・「◯◯でラーメン」
+・「食事処△△」
 
 【季節ルール】
 - 冬（12〜3月）は安全配慮の文言を必ず追加する。
@@ -741,32 +755,45 @@ F. その他
 
       // ランチ系発話を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
       if (matchedSpots && matchedSpots.length > 0) {
-        const wantsLunch = detectLunchIntent(userMessage);
+        const stopIntent = detectStopIntent(userMessage);
 
-        if (wantsLunch) {
-          // waypointsの中間地点を基準に検索
-          const baseSpotIndex = Math.floor(matchedSpots.length / 2);
-          const baseSpot = matchedSpots[baseSpotIndex];
+        if (stopIntent) {
+          // 挿入位置の決定
+          let baseSpotIndex: number;
+          if (stopIntent.insertAfterSpotIndex !== undefined) {
+            baseSpotIndex = stopIntent.insertAfterSpotIndex;
+          } else {
+            // デフォルト: spotsが2つ以上あるならindex=1、1つしかないならindex=0
+            baseSpotIndex = matchedSpots.length >= 2 ? 1 : 0;
+          }
+          
+          // 範囲チェック
+          if (baseSpotIndex < 0 || baseSpotIndex >= matchedSpots.length) {
+            console.warn("[koyo-after] Invalid baseSpotIndex:", baseSpotIndex, "spots length:", matchedSpots.length);
+            placesApiFailed = true;
+          } else {
+            const baseSpot = matchedSpots[baseSpotIndex];
 
           if (baseSpot.lat != null && baseSpot.lng != null) {
             const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
-            console.log("[koyo-after] Lunch intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex);
+            console.log("[koyo-after] Meal intent detected, searching places near:", baseLocation, "from spot index:", baseSpotIndex, "keyword:", stopIntent.keyword || stopIntent.fallbackKeyword);
 
-            const place = await searchLunchPlaces(baseLocation);
+            const place = await searchMealPlaces(baseLocation, stopIntent);
 
             if (place) {
               const lunchSpot = convertPlaceToSpot(place);
-              // spots配列の中間に挿入
-              const insertIndex = Math.floor(matchedSpots.length / 2);
+              // spots配列の該当位置の直後に挿入
+              const insertIndex = baseSpotIndex + 1;
               matchedSpots.splice(insertIndex, 0, lunchSpot);
-              console.log("[koyo-after] Added lunch place at index:", insertIndex, "name:", place.name);
+              console.log("[koyo-after] Added meal place at index:", insertIndex, "name:", place.name, "foodCategory:", stopIntent.foodCategory);
             } else {
               placesApiFailed = true;
-              console.log("[koyo-after] No lunch place found from Google Places API");
+              console.log("[koyo-after] No meal place found from Google Places API");
             }
           } else {
             placesApiFailed = true;
             console.warn("[koyo-after] Base spot has no coordinates");
+          }
           }
         }
       }
@@ -795,10 +822,7 @@ F. その他
     // replyからJSON部分を除去してクリーンなメッセージにする
     let cleanReply = cleanReplyMessage(reply);
 
-    // Places API失敗時のメッセージを追加
-    if (placesApiFailed && detectLunchIntent(userMessage)) {
-      cleanReply += "\n\n申し訳ありません。周辺で条件に合うランチスポットが見つからなかったため、観光中心のプランをご提案しています。";
-    }
+    // Places API結果はreplyに追記しない（フェーズ1: AIは店名を知らない）
 
     // レスポンスを構築
     const response: any = {

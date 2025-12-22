@@ -24,6 +24,22 @@ export type RoutePoint = {
 
 export type KoyoMode = "before" | "stay" | "after";
 
+// StopType: 途中立ち寄りスポットの種類（将来拡張用）
+export type StopType = "meal" | "cafe" | "rest" | "onsen" | "shopping";
+
+// StopIntent: 途中立ち寄りスポットの検出結果
+export type StopIntent = {
+  type: StopType;
+  foodCategory?: string; // 意味レベル（例: "ラーメン", "芋煮"）- ユーザー意図
+  keyword?: string; // Places API用（既存・後方互換）- 実検索ワード
+  fallbackKeyword: string; // デフォルトキーワード（例: "ランチ"）
+  preferenceTags?: string[]; // 好みのタグ（例: ["温かい", "冬向き"]）- フェーズ1では未使用
+  placeType?: string; // Google Places 'type'（例: "restaurant"）
+  radius?: number; // 検索半径（メートル、デフォルト: 2000）
+  insertAfterSpotIndex?: number; // どのスポットの後に挿入するか（未指定時は自動計算）
+  reason?: string; // replyに追記する一言（任意）
+};
+
 // RoutePlan: 双方向機能強化用のルートプラン状態
 export type RoutePlan = {
   planId: string; // 一意のID（UUID形式）
