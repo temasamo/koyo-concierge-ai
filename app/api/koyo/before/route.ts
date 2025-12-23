@@ -1201,6 +1201,29 @@ G. その他（自由入力）
       });
     }
 
+    // Places API統合（途中立ち寄り意図検出）
+    // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
+    // stopIntentは既にEセクションで定義済み（1162行目）
+    const baseSpots = matchedSpots ?? [];
+    // originが確定している場合は使用、そうでない場合はnull
+    const originForPlaces = aiOrigin && (aiOrigin.type === "fixed" || aiOrigin.type === "current") && aiOrigin.lat && aiOrigin.lng
+      ? { lat: aiOrigin.lat, lng: aiOrigin.lng }
+      : undefined;
+    
+    // stopIntentが定義されている場合のみintegratePlacesを呼ぶ（Eセクションで既に呼んでいる場合はスキップ）
+    let finalSpots: any[] | undefined = matchedSpots;
+    if (stopIntent) {
+      const result = await integratePlaces(baseSpots, stopIntent, originForPlaces, KOYO_COORDINATES);
+      
+      // Eセクションで取得したplacesApiFailedとplacesAddedを上書き（finalSpotsが更新された場合）
+      if (result.spots && result.spots.length > 0) {
+        placesApiFailed = result.placesApiFailed;
+        placesAdded = result.placesAdded;
+        matchedSpots = result.spots;
+        finalSpots = result.spots;
+      }
+    }
+
     // replyからJSON部分を除去してクリーンなメッセージにする
     let cleanReply = cleanReplyMessage(reply);
     
@@ -1236,31 +1259,9 @@ G. その他（自由入力）
     if (finalPlan != null && Array.isArray(finalPlan) && finalPlan.length > 0) {
       response.plan = finalPlan;
     }
-
-    // Places API統合（途中立ち寄り意図検出）
-    // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
-    // stopIntentは既にEセクションで定義済み（1162行目）
-    const baseSpots = matchedSpots ?? [];
-    // originが確定している場合は使用、そうでない場合はnull
-    const originForPlaces = aiOrigin && (aiOrigin.type === "fixed" || aiOrigin.type === "current") && aiOrigin.lat && aiOrigin.lng
-      ? { lat: aiOrigin.lat, lng: aiOrigin.lng }
-      : undefined;
-    
-    // stopIntentが定義されている場合のみintegratePlacesを呼ぶ（Eセクションで既に呼んでいる場合はスキップ）
-    let finalSpots: any[] | undefined = matchedSpots;
-    if (stopIntent) {
-      const result = await integratePlaces(baseSpots, stopIntent, originForPlaces, KOYO_COORDINATES);
-      
-      // Eセクションで取得したplacesApiFailedとplacesAddedを上書き（finalSpotsが更新された場合）
-      if (result.spots && result.spots.length > 0) {
-        placesApiFailed = result.placesApiFailed;
-        placesAdded = result.placesAdded;
-        matchedSpots = result.spots;
-        finalSpots = result.spots;
-      }
-    }
     
     // フロントエンド互換性のため、統合後のspotsを返す
+    // finalSpotsは既に1204-1225行目で定義済み
     if (finalSpots != null && Array.isArray(finalSpots) && finalSpots.length > 0) {
       response.spots = finalSpots;
     }
