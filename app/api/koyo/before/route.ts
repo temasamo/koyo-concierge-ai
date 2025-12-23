@@ -1239,15 +1239,26 @@ G. その他（自由入力）
 
     // Places API統合（途中立ち寄り意図検出）
     // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
+    // stopIntentは既にEセクションで定義済み（1162行目）
     const baseSpots = matchedSpots ?? [];
-    // チャット履歴から最初のStopIntentを含むメッセージを探す
-    const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-    const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
     // originが確定している場合は使用、そうでない場合はnull
     const originForPlaces = aiOrigin && (aiOrigin.type === "fixed" || aiOrigin.type === "current") && aiOrigin.lat && aiOrigin.lng
       ? { lat: aiOrigin.lat, lng: aiOrigin.lng }
       : undefined;
-    const { spots: finalSpots, placesApiFailed, placesAdded } = await integratePlaces(baseSpots, stopIntent, originForPlaces, KOYO_COORDINATES);
+    
+    // stopIntentが定義されている場合のみintegratePlacesを呼ぶ（Eセクションで既に呼んでいる場合はスキップ）
+    let finalSpots: any[] | undefined = matchedSpots;
+    if (stopIntent) {
+      const result = await integratePlaces(baseSpots, stopIntent, originForPlaces, KOYO_COORDINATES);
+      
+      // Eセクションで取得したplacesApiFailedとplacesAddedを上書き（finalSpotsが更新された場合）
+      if (result.spots && result.spots.length > 0) {
+        placesApiFailed = result.placesApiFailed;
+        placesAdded = result.placesAdded;
+        matchedSpots = result.spots;
+        finalSpots = result.spots;
+      }
+    }
     
     // フロントエンド互換性のため、統合後のspotsを返す
     if (finalSpots != null && Array.isArray(finalSpots) && finalSpots.length > 0) {
