@@ -63,6 +63,10 @@ type SpotStore = {
   routeLegs: RouteLegInfo[];
   setRouteLegs: (routeLegs: RouteLegInfo[]) => void;
   clearRouteLegs: () => void;
+  // 自由入力モード管理
+  originInputMode: "free" | undefined;
+  setOriginInputMode: (mode: "free" | undefined) => void;
+  clearOriginInputMode: () => void;
 };
 
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -127,5 +131,9 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   routeLegs: [],
   setRouteLegs: (routeLegs) => set({ routeLegs }),
   clearRouteLegs: () => set({ routeLegs: [] }),
+  // 自由入力モード管理
+  originInputMode: undefined,
+  setOriginInputMode: (mode) => set({ originInputMode: mode }),
+  clearOriginInputMode: () => set({ originInputMode: undefined }),
 }));
 

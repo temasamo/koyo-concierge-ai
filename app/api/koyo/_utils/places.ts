@@ -290,53 +290,80 @@ export function convertPlaceToSpot(place: GooglePlace): {
 /**
  * StopIntentに基づいてPlaces APIを呼び出し、spots配列に統合（汎用版）
  * フェーズ1.5: AIは店名を知らない。ルートにstopを挿入する責務のみ。
- * @param spots 既存のspots配列
+ * @param spots 既存のspots配列（空でもOK）
  * @param stopIntent StopIntent（nullの場合は何もしない）
- * @returns { spots: 統合後のspots配列, placesApiFailed: Places APIが失敗したか }
+ * @param origin 出発地座標（spotsが空の場合に使用、オプショナル）
+ * @param destination 目的地座標（spotsが空の場合に使用、オプショナル）
+ * @returns { spots: 統合後のspots配列, placesApiFailed: Places APIが失敗したか, placesAdded: Places APIでスポットが追加されたか }
  */
 export async function integratePlaces(
   spots: any[],
-  stopIntent: StopIntent | null
-): Promise<{ spots: any[]; placesApiFailed: boolean }> {
-  if (!spots || spots.length === 0) {
-    return { spots, placesApiFailed: false };
-  }
+  stopIntent: StopIntent | null,
+  origin?: { lat: number; lng: number },
+  destination?: { lat: number; lng: number }
+): Promise<{ spots: any[]; placesApiFailed: boolean; placesAdded: boolean }> {
+  // spotsが空でもstopIntentがあればPlaces APIを呼ぶ（DBスポットがなくてもPlacesで補完）
+  const baseSpots = spots || [];
 
   if (!stopIntent) {
     // DBスポットにsourceフィールドを追加
-    spots.forEach((spot) => {
+    baseSpots.forEach((spot) => {
       if (!spot.source) {
         spot.source = "db";
       }
     });
-    return { spots, placesApiFailed: false };
+    return { spots: baseSpots, placesApiFailed: false, placesAdded: false };
   }
 
   let placesApiFailed = false;
+  let placesAdded = false;
+  let baseLocation: { lat: number; lng: number } | null = null;
 
-  // 挿入位置の決定
-  let baseSpotIndex: number;
-  if (stopIntent.insertAfterSpotIndex !== undefined) {
-    baseSpotIndex = stopIntent.insertAfterSpotIndex;
-  } else {
-    // デフォルト: spotsが2つ以上あるなら中間位置、1つしかないならindex=0
-    baseSpotIndex = spots.length >= 2 ? Math.floor(spots.length / 2) : 0;
+  // baseLocationの決定
+  if (baseSpots.length > 0) {
+    // spotsがある場合：挿入位置の決定
+    let baseSpotIndex: number;
+    if (stopIntent.insertAfterSpotIndex !== undefined) {
+      baseSpotIndex = stopIntent.insertAfterSpotIndex;
+    } else {
+      // デフォルト: spotsが2つ以上あるなら中間位置、1つしかないならindex=0
+      baseSpotIndex = baseSpots.length >= 2 ? Math.floor(baseSpots.length / 2) : 0;
+    }
+    
+    const baseSpot = baseSpots[baseSpotIndex];
+    
+    if (baseSpot.lat != null && baseSpot.lng != null) {
+      baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+    }
+  } else if (origin && destination) {
+    // spotsが空の場合：originとdestinationの中間地点を使用
+    baseLocation = {
+      lat: (origin.lat + destination.lat) / 2,
+      lng: (origin.lng + destination.lng) / 2,
+    };
+    console.log("[koyo-places] Spots is empty, using midpoint between origin and destination:", baseLocation);
+  } else if (origin) {
+    // destinationがない場合はoriginを使用
+    baseLocation = origin;
+    console.log("[koyo-places] Spots is empty, using origin as baseLocation:", baseLocation);
   }
-  
-  const baseSpot = spots[baseSpotIndex];
-  
-  if (baseSpot.lat != null && baseSpot.lng != null) {
-    const baseLocation = { lat: baseSpot.lat, lng: baseSpot.lng };
+
+  if (baseLocation) {
     const keyword = stopIntent.foodCategory ?? stopIntent.keyword ?? stopIntent.fallbackKeyword;
-    console.log("[koyo-places] Stop intent detected:", stopIntent.type, "searching places near:", baseLocation, "from spot index:", baseSpotIndex, "keyword:", keyword);
+    console.log("[koyo-places] Stop intent detected:", stopIntent.type, "searching places near:", baseLocation, "keyword:", keyword);
 
     const place = await searchPlaces(baseLocation, stopIntent);
 
     if (place) {
       const newSpot = convertPlaceToSpot(place);
-      // spots配列の該当位置の直後に挿入
-      const insertIndex = baseSpotIndex + 1;
-      spots.splice(insertIndex, 0, newSpot);
+      // spots配列の先頭に挿入（spotsが空の場合は先頭、そうでない場合はbaseSpotIndex + 1）
+      const insertIndex = baseSpots.length > 0 && baseSpots.length >= 2 
+        ? Math.floor(baseSpots.length / 2) + 1 
+        : baseSpots.length > 0 
+          ? 1 
+          : 0;
+      baseSpots.splice(insertIndex, 0, newSpot);
+      placesAdded = true;
       console.log("[koyo-places] Added place at index:", insertIndex, "name:", place.name, "type:", stopIntent.type, "foodCategory:", stopIntent.foodCategory);
     } else {
       placesApiFailed = true;
@@ -344,17 +371,17 @@ export async function integratePlaces(
     }
   } else {
     placesApiFailed = true;
-    console.warn("[koyo-places] Base spot has no coordinates");
+    console.warn("[koyo-places] Cannot determine baseLocation: spots is empty and origin/destination not provided");
   }
 
   // DBスポットにsourceフィールドを追加
-  spots.forEach((spot) => {
+  baseSpots.forEach((spot) => {
     if (!spot.source) {
       spot.source = "db";
     }
   });
 
-  return { spots, placesApiFailed };
+  return { spots: baseSpots, placesApiFailed, placesAdded };
 }
 
 /**

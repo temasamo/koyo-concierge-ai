@@ -596,7 +596,7 @@ export default function GoogleMap({
             Math.abs(dest.lng - point.lng) < 0.000001
           ) {
             return `到着：${point.name}`;
-          }
+    }
         }
         
         // 一致しない場合は座標を表示
@@ -825,9 +825,9 @@ export default function GoogleMap({
 
     directionsServiceRef.current.route(request, (result: any, status: any) => {
 
-      if (status === google.maps.DirectionsStatus.OK && result) {
-        directionsRendererRef.current.setDirections(result);
-        lastRouteSpotsRef.current = currentRouteKey;
+        if (status === google.maps.DirectionsStatus.OK && result) {
+          directionsRendererRef.current.setDirections(result);
+          lastRouteSpotsRef.current = currentRouteKey;
         setRouteWarning(null);
         
         // routeLegs を生成してストアに保存
@@ -845,7 +845,7 @@ export default function GoogleMap({
       }
 
       const logFailure = () => {
-        console.error("[GoogleMap] Directions API error:", status);
+          console.error("[GoogleMap] Directions API error:", status);
         console.error("[GoogleMap] Full request object:", JSON.stringify(request, null, 2));
         console.error("[GoogleMap] Request details:", {
           origin: {
@@ -1031,33 +1031,33 @@ export default function GoogleMap({
         // スポット情報を取得
         const spot = markers.find((s) => s.id === point.spotId);
         if (spot) {
-          const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
+        const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
           infoWindowContent = `
-            <div style="
-              max-width: 220px;
-              padding: 8px;
-              font-family: sans-serif;
-            ">
-              <h3 style="margin:0 0 6px; font-size:14px; font-weight:bold;">
-                ${spot.name || "スポット名不明"}
-              </h3>
+          <div style="
+            max-width: 220px;
+            padding: 8px;
+            font-family: sans-serif;
+          ">
+            <h3 style="margin:0 0 6px; font-size:14px; font-weight:bold;">
+              ${spot.name || "スポット名不明"}
+            </h3>
 
-              <img 
-                src="${imageUrl}"
-                style="width:100%; border-radius:6px; margin-bottom:6px;"
-                onerror="this.src='/noimage.png'"
-              />
+            <img 
+              src="${imageUrl}"
+              style="width:100%; border-radius:6px; margin-bottom:6px;"
+              onerror="this.src='/noimage.png'"
+            />
 
-              ${spot.category ? `<p style="margin:0 0 4px; font-size:12px; color:#2563eb;">カテゴリ: ${spot.category}</p>` : ""}
-              ${spot.city ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">場所: ${spot.city}</p>` : ""}
-              ${spot.drive_minutes != null ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">${spot.drive_time}</p>` : ""}
-              ${spot.stay_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">滞在時間: ${spot.stay_time}</p>` : ""}
-              ${spot.season ? `<p style="margin:0; font-size:12px; color:#666;">シーズン: ${spot.season}</p>` : ""}
-            </div>
-          `;
+            ${spot.category ? `<p style="margin:0 0 4px; font-size:12px; color:#2563eb;">カテゴリ: ${spot.category}</p>` : ""}
+            ${spot.city ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">場所: ${spot.city}</p>` : ""}
+            ${spot.drive_minutes != null ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">${spot.drive_time}</p>` : ""}
+            ${spot.stay_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">滞在時間: ${spot.stay_time}</p>` : ""}
+            ${spot.season ? `<p style="margin:0; font-size:12px; color:#666;">シーズン: ${spot.season}</p>` : ""}
+          </div>
+        `;
           infoWindow = new InfoWindow({
             content: infoWindowContent,
-          });
+        });
         }
       }
 
@@ -1098,40 +1098,40 @@ export default function GoogleMap({
 
       newMarkers.push(marker);
       bounds.extend(point.location);
-    });
+      });
 
     // マーカー参照を更新
-    markersRef.current = newMarkers;
+      markersRef.current = newMarkers;
 
-    // デバッグログ：表示されたマーカー数を確認
+      // デバッグログ：表示されたマーカー数を確認
     console.log(`[GoogleMap] Created ${newMarkers.length} markers from routePoints (${skippedCount} skipped)`);
-    
-    if (newMarkers.length === 0) {
+      
+      if (newMarkers.length === 0) {
       console.warn("[GoogleMap] No valid markers created from routePoints");
-      // マーカーがない場合は中心を設定
-      map.setCenter(center);
-      map.setZoom(12);
-      return;
-    }
+        // マーカーがない場合は中心を設定
+        map.setCenter(center);
+        map.setZoom(12);
+        return;
+      }
 
-    // mapRef.current が存在してから実行
-    if (!mapInstanceRef.current) {
-      console.error("[GoogleMap] mapInstanceRef.current is null");
-      return;
-    }
+      // mapRef.current が存在してから実行
+      if (!mapInstanceRef.current) {
+        console.error("[GoogleMap] mapInstanceRef.current is null");
+        return;
+      }
 
     // マーカー数で挙動を分岐
-    const totalMarkerCount = newMarkers.length;
-    if (totalMarkerCount === 1) {
+      const totalMarkerCount = newMarkers.length;
+      if (totalMarkerCount === 1) {
       // マーカーが1つのみ → zoom: 14
-      mapInstanceRef.current.setCenter(bounds.getCenter());
-      mapInstanceRef.current.setZoom(14);
+        mapInstanceRef.current.setCenter(bounds.getCenter());
+        mapInstanceRef.current.setZoom(14);
       console.log("[Map] マーカー1つのためズーム固定で表示");
-    } else if (totalMarkerCount > 1) {
+      } else if (totalMarkerCount > 1) {
       // 複数マーカー → bounds.fit()
-      mapInstanceRef.current.fitBounds(bounds, 80);
+        mapInstanceRef.current.fitBounds(bounds, 80);
       console.log("[Map] 複数マーカーのため bounds.fit で調整");
-    }
+      }
   }, [routePoints, isLoading, googleMapsLibs, center, markers]); // routePointsが更新されたら再描画
 
   return (

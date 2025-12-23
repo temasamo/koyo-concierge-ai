@@ -14,6 +14,7 @@ import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 import { detectStopIntent, integratePlaces } from "../_utils/places";
 import { detectStopIntent as detectStopIntentFromUtils } from "../_utils/detectStopIntent";
+import type { StopIntent } from "@/types/route";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -468,14 +469,131 @@ function cleanReplyMessage(reply: string): string {
 }
 
 /**
+ * Places API検索結果が0件の場合、reply内の断定表現を抽象表現に置き換える
+ * フェーズ1.5: AIが嘘をつかないように、事実に基づかない断定表現を弱める
+ */
+function sanitizeReplyForFailedPlaces(
+  reply: string,
+  stopIntent: StopIntent | null
+): string {
+  if (!stopIntent || stopIntent.type !== "lunch") {
+    // lunch以外は対象外（フェーズ1.5ではlunchのみ）
+    return reply;
+  }
+  
+  let sanitized = reply;
+  
+  // 山形牛・米沢牛などの特定食材名の断定表現を削除
+  sanitized = sanitized.replace(/山形牛[^。]*。/g, "旅の流れに合わせて、周辺で食事の時間をお取りください。");
+  sanitized = sanitized.replace(/米沢牛[^。]*。/g, "旅の流れに合わせて、周辺で食事の時間をお取りください。");
+  
+  // 名物・特定料理名の断定表現を削除
+  sanitized = sanitized.replace(/名物[^。]*。/g, "地元ならではの食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/芋煮[^。]*。/g, "地元ならではの温かい食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/ラーメン[^。]*。/g, "旅の流れに合わせて、温かい食事の時間をお取りください。");
+  sanitized = sanitized.replace(/そば[^。]*。/g, "旅の流れに合わせて、食事の時間をお取りください。");
+  
+  // 特定体験の断定表現を弱める
+  sanitized = sanitized.replace(/地元の味[^。]*。/g, "地元ならではの食事を楽しむ時間を設けるのもおすすめです。");
+  
+  return sanitized;
+}
+
+/**
+ * StopIntentとplacesAddedに基づいて体験コメントを生成
+ * @param stopIntent StopIntent（nullの場合は空文字を返す）
+ * @param placesAdded Places APIでスポットが追加されたか
+ * @returns 体験コメント（placesAddedがfalseの場合は空文字）
+ */
+function appendExperienceComment(
+  stopIntent: StopIntent | null,
+  placesAdded: boolean
+): string {
+  if (!stopIntent || !placesAdded) {
+    return "";
+  }
+
+  switch (stopIntent.type) {
+    case "lunch":
+      if (stopIntent.foodCategory === "そば") {
+        return "道中で、山形らしいそばを味わう時間を組み込んでいます。";
+      } else if (stopIntent.foodCategory === "ラーメン") {
+        return "道中で、温かいラーメンを楽しむ時間を組み込んでいます。";
+      } else if (stopIntent.foodCategory === "芋煮") {
+        return "道中で、山形の名物である芋煮を味わう時間を組み込んでいます。";
+      } else if (stopIntent.foodCategory === "米沢牛") {
+        return "道中で、上質な米沢牛を味わう時間を組み込んでいます。";
+      } else if (stopIntent.foodCategory === "山形牛") {
+        return "道中で、上質な山形牛を味わう時間を組み込んでいます。";
+      } else if (stopIntent.foodCategory === "冷やしラーメン") {
+        return "道中で、冷やしラーメンを楽しむ時間を組み込んでいます。";
+      } else {
+        // foodCategoryが未定義の場合
+        return "道中で、無理のない食事の時間を組み込んでいます。";
+      }
+    case "cafe":
+      return "移動の合間に、ひと息つける休憩時間を設けています。";
+    case "rest":
+      return "移動の合間に、散策や休憩の時間を設けています。";
+    case "onsen":
+      return "道中で、温泉でゆっくりとくつろぐ時間を組み込んでいます。";
+    case "shop":
+      return "道中で、お土産を選ぶ時間を組み込んでいます。";
+    default:
+      return "";
+  }
+}
+
+/**
+ * チャット履歴から最初のStopIntentを含むメッセージを探す
+ * @param userMessages チャット履歴
+ * @returns StopIntentを含む最初のメッセージ（見つからない場合はnull）
+ */
+function findStopIntentMessage(userMessages: ChatCompletionMessageParam[]): string | null {
+  // チャット履歴を時系列順（古い順）で確認
+  for (const message of userMessages) {
+    if (message.role === "user" && typeof message.content === "string") {
+      const stopIntent = detectStopIntentFromUtils(message.content);
+      if (stopIntent) {
+        console.log("[koyo-before] Found stopIntent in message:", message.content, "stopIntent:", stopIntent);
+        return message.content;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * チャット履歴から「G」が選択されたかを確認する
+ * @param userMessages チャット履歴
+ * @returns 「G」が選択された場合はtrue
+ */
+function isGSelectedInHistory(userMessages: ChatCompletionMessageParam[]): boolean {
+  // チャット履歴を時系列順（古い順）で確認
+  console.log("[koyo-before] Checking for 'G' in message history, messages count:", userMessages.length);
+  for (const message of userMessages) {
+    if (message.role === "user" && typeof message.content === "string") {
+      const trimmed = message.content.trim().toUpperCase();
+      console.log("[koyo-before] Checking message:", message.content, "trimmed:", trimmed);
+      if (trimmed === "G") {
+        console.log("[koyo-before] Found 'G' selection in message history");
+        return true;
+      }
+    }
+  }
+  console.log("[koyo-before] No 'G' found in message history");
+  return false;
+}
+
+/**
  * リクエストボディの型
  * - messages: chat履歴（フロントが管理）
  * - query: 単発問い合わせ
- * - userState: ユーザーの状態（originなど）
+ * - userState: ユーザーの状態（origin、originInputModeなど）
  */
 type BeforeRequestBody =
-  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo } }
-  | { query: string; userState?: { origin?: OriginInfo } };
+  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo; originInputMode?: "free" } }
+  | { query: string; userState?: { origin?: OriginInfo; originInputMode?: "free" } };
 
 // デフォルトの origin 値
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -509,15 +627,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2️⃣ ユーザー状態（origin）を取得
+    // 2️⃣ ユーザー状態（origin、originInputMode）を取得
     const userState = body.userState || {};
     const currentOrigin: OriginInfo = userState.origin || DEFAULT_ORIGIN;
+    const originInputMode = userState.originInputMode;
     
     console.log("[koyo-before] Received userState:", {
       userState,
       currentOrigin,
       originType: currentOrigin?.type,
       originPref: currentOrigin?.pref,
+      originInputMode,
+      userMessage,
     });
 
     const hasOrigin =
@@ -571,14 +692,15 @@ export async function POST(req: NextRequest) {
         });
 
         // Places API統合（途中立ち寄り意図検出）
+        // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
         let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
-        let placesApiFailed = false;
-        if (finalSpots.length > 0) {
-          const stopIntent = detectStopIntentFromUtils(userMessage);
-          const result = await integratePlaces(finalSpots, stopIntent);
-          finalSpots = result.spots;
-          placesApiFailed = result.placesApiFailed;
-        }
+        // チャット履歴から最初のStopIntentを含むメッセージを探す
+        const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+        const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+        const result = await integratePlaces(finalSpots, stopIntent, originForPlan, KOYO_COORDINATES);
+        finalSpots = result.spots;
+        const placesApiFailed = result.placesApiFailed;
+        const placesAdded = result.placesAdded;
 
         // routeInfo を構築（origin/waypoints/destination）
         let routeOrigin: { lat: number; lng: number };
@@ -603,6 +725,19 @@ export async function POST(req: NextRequest) {
 
         // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
         let reply = plan.reply || "";
+        
+        // 体験コメントを追記（placesAdded === true の場合のみ）
+        if (placesAdded && stopIntent) {
+          const experienceComment = appendExperienceComment(stopIntent, placesAdded);
+          if (experienceComment) {
+            reply += " " + experienceComment;
+          }
+        }
+        
+        // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
+        if (placesApiFailed && stopIntent) {
+          reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
+        }
 
         // ✅ Pre-Checkin 時だけ origin を返す
         return NextResponse.json({
@@ -632,10 +767,17 @@ export async function POST(req: NextRequest) {
     // ここに来る時点では「origin 未決定（type === null）」とする
 
     // --------------------------------------------------
-    // B. 「チェックイン前のプラン」などのトリガー発話
-    //    → 出発地の選択肢を聞く
+    // B. 出発地が未確定の場合
+    //    → 出発地の選択肢を聞く（Beforeモードでは必ず必要）
+    //    ※ detectPreCheckinIntentに依存しない（状態ベースで判定）
+    //    ※ 自由入力モード中はスキップ（A〜Gの選択肢を再表示しない）
+    //    ※ 「G」が選択された場合はDセクションで処理するため、ここでは除外
     // --------------------------------------------------
-    if (isPreCheckinIntent && !originSelection) {
+    // Gが選択された場合を明示的に検出（Bセクションより前にチェック）
+    const isGSelected = userMessage.trim().toUpperCase() === "G";
+    
+    // 自由入力モード中はBセクションをスキップ
+    if (!originSelection && !isGSelected && originInputMode !== "free") {
       return NextResponse.json({
         mode: "precheckin-origin-select",
         reply: `
@@ -680,14 +822,15 @@ G. その他（自由入力）
           });
 
           // Places API統合（途中立ち寄り意図検出）
+          // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
-          let placesApiFailed = false;
-          if (finalSpots.length > 0) {
-            const stopIntent = detectStopIntentFromUtils(userMessage);
-            const result = await integratePlaces(finalSpots, stopIntent);
-            finalSpots = result.spots;
-            placesApiFailed = result.placesApiFailed;
-          }
+          // チャット履歴から最初のStopIntentを含むメッセージを探す
+          const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+          const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+          const result = await integratePlaces(finalSpots, stopIntent, originSelection, KOYO_COORDINATES);
+          finalSpots = result.spots;
+          const placesApiFailed = result.placesApiFailed;
+          const placesAdded = result.placesAdded;
 
           const waypoints =
             finalSpots.length > 0
@@ -698,6 +841,19 @@ G. その他（自由入力）
 
           // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
           let reply = plan.reply || "";
+          
+          // 体験コメントを追記（placesAdded === true の場合のみ）
+          if (placesAdded && stopIntent) {
+            const experienceComment = appendExperienceComment(stopIntent, placesAdded);
+            if (experienceComment) {
+              reply += " " + experienceComment;
+            }
+          }
+          
+          // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
+          if (placesApiFailed && stopIntent) {
+            reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
+          }
 
           return NextResponse.json({
             ...plan,
@@ -732,10 +888,64 @@ G. その他（自由入力）
 
     // --------------------------------------------------
     // D. 自由入力（G）など：文章から県を推定するパス
-    //    ※ Pre-Checkin intent の場合のみ実行
+    //    Gが選択された場合、またはPre-Checkin intentの場合に実行
     // --------------------------------------------------
-    if (isPreCheckinIntent) {
+    // Gが選択された場合を明示的に検出（isPreCheckinIntentに依存しない）
+    // isGSelectedはBセクションで既に定義済み
+    const wasGSelectedInHistory = isGSelectedInHistory(userMessages);
+    
+    console.log("[koyo-before] G selection check:", {
+      isGSelected,
+      wasGSelectedInHistory,
+      userMessage,
+      isPreCheckinIntent,
+    });
+    
+    // Gが選択された場合、次の入力を待つ（自由入力モードに入る）
+    if (isGSelected) {
+      return NextResponse.json({
+        mode: "precheckin-origin-select",
+        reply: `自由入力を選択されましたね。出発地を教えてください。
+
+例：
+- 「仙台」（宮城経由）
+- 「福島」（福島経由）
+- 「秋田」（秋田経由）
+- 「新潟」（新潟経由）
+- 「関東から」（福島または新潟経由を確認します）
+
+県名や都市名を入力してください。`,
+        origin: DEFAULT_ORIGIN,
+        originInputMode: "free", // 自由入力モードを有効化
+      });
+    }
+    
+    // 自由入力モード中、またはPre-Checkin intentの場合に県名推定を実行
+    const shouldResolveFreeInput = originInputMode === "free" || isPreCheckinIntent || wasGSelectedInHistory;
+    
+    console.log("[koyo-before] Free input resolution check:", {
+      userMessage,
+      originInputMode,
+      isPreCheckinIntent,
+      wasGSelectedInHistory,
+      shouldResolveFreeInput,
+    });
+    
+    if (shouldResolveFreeInput) {
+      console.log("[koyo-before] Resolving origin from free input:", {
+        userMessage,
+        originInputMode,
+        isPreCheckinIntent,
+        wasGSelectedInHistory,
+      });
+      
       const resolution = resolveOriginFromFreeInput(userMessage);
+      
+      console.log("[koyo-before] Origin resolution result:", {
+        type: resolution.type,
+        prefecture: resolution.type === "resolved" ? resolution.prefecture : undefined,
+        origin: resolution.type === "resolved" ? resolution.origin : undefined,
+      });
 
       if (resolution.type === "resolved") {
         try {
@@ -746,14 +956,15 @@ G. その他（自由入力）
           });
 
           // Places API統合（途中立ち寄り意図検出）
+          // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
-          let placesApiFailed = false;
-          if (finalSpots.length > 0) {
-            const stopIntent = detectStopIntentFromUtils(userMessage);
-            const result = await integratePlaces(finalSpots, stopIntent);
-            finalSpots = result.spots;
-            placesApiFailed = result.placesApiFailed;
-          }
+          // チャット履歴から最初のStopIntentを含むメッセージを探す
+          const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+          const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+          const result = await integratePlaces(finalSpots, stopIntent, resolution.origin, KOYO_COORDINATES);
+          finalSpots = result.spots;
+          const placesApiFailed = result.placesApiFailed;
+          const placesAdded = result.placesAdded;
 
           const prefBoundary = getPrefBoundary(resolution.prefecture);
           const waypoints =
@@ -765,22 +976,48 @@ G. その他（自由入力）
 
           // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
           let reply = plan.reply || "";
+          
+          // 体験コメントを追記（placesAdded === true の場合のみ）
+          if (placesAdded && stopIntent) {
+            const experienceComment = appendExperienceComment(stopIntent, placesAdded);
+            if (experienceComment) {
+              reply += " " + experienceComment;
+            }
+          }
+          
+          // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
+          if (placesApiFailed && stopIntent) {
+            reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
+          }
 
+          const originResponse: OriginInfo = {
+            type: "pref-boundary",
+            pref: resolution.prefecture,
+            lat: null,
+            lng: null, // 座標はフロント側で県境から決定
+            name: null,
+          };
+          
+          console.log("[koyo-before] Returning resolved origin:", {
+            origin: originResponse,
+            prefBoundary,
+            waypointsCount: waypoints.length,
+            spotsCount: finalSpots.length,
+          });
+
+          // originが確定した時点でoriginInputModeを削除（リセット）
+          // originInputModeを含めない = フロントエンド側で削除される
           return NextResponse.json({
             ...plan,
             spots: finalSpots,
             reply,
-            origin: {
-              type: "pref-boundary",
-              pref: resolution.prefecture,
-              lat: null,
-              lng: null, // 座標はフロント側で県境から決定
-            } as OriginInfo,
+            origin: originResponse,
             routeInfo: {
               origin: prefBoundary,
               waypoints,
               destination: KOYO_COORDINATES,
             },
+            // originInputModeは含めない（削除を意味する）
           });
         } catch (error: any) {
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
@@ -796,6 +1033,7 @@ G. その他（自由入力）
       }
 
       if (resolution.type === "ambiguous") {
+        // 曖昧な場合はoriginInputModeを維持（次の入力で再試行）
         return NextResponse.json({
           type: "ask-pref",
           mode: "precheckin-origin-select",
@@ -803,14 +1041,17 @@ G. その他（自由入力）
           message: resolution.message,
           choices: resolution.candidates,
           origin: DEFAULT_ORIGIN,
+          originInputMode: "free", // 自由入力モードを維持
         });
       }
 
       if (resolution.type === "unknown") {
+        // 不明な場合もoriginInputModeを維持（再入力を促す）
         return NextResponse.json({
           mode: "precheckin-origin-select",
           reply: resolution.message,
           origin: DEFAULT_ORIGIN,
+          originInputMode: "free", // 自由入力モードを維持
         });
       }
     }
@@ -818,6 +1059,29 @@ G. その他（自由入力）
     // --------------------------------------------------
     // E. ここまで来たら「Pre-Checkin ではない通常の Before」
     // --------------------------------------------------
+
+    // Beforeモードではorigin未確定なら必ず出発地を聞く（状態ベースで判定）
+    // ただし、自由入力モード中はスキップ（A〜Gの選択肢を再表示しない）
+    if (!hasOrigin && !originSelection && originInputMode !== "free") {
+      return NextResponse.json({
+        mode: "precheckin-origin-select",
+        reply: `
+チェックイン前の観光プランをお作りしますね！
+まず、出発地を教えてください。
+
+A. 山形駅
+B. 山形空港
+C. かみのやま温泉駅
+D. 山形蔵王IC（高速）
+E. かみのやま温泉IC（高速）
+F. 現在地を使う
+G. その他（自由入力）
+
+例：「A」「空港」「現在地で」など簡単でOKです！
+`.trim(),
+        origin: DEFAULT_ORIGIN, // まだ決まっていない
+      });
+    }
 
     const systemPrompt = await getSystemPrompt();
 
@@ -891,13 +1155,26 @@ G. その他（自由入力）
     }
 
     // replyからJSON部分を除去してクリーンなメッセージにする
-    const cleanReply = cleanReplyMessage(reply);
+    let cleanReply = cleanReplyMessage(reply);
+    
+    // 体験コメントを追記（placesAdded === true の場合のみ）
+    if (placesAdded && stopIntent) {
+      const experienceComment = appendExperienceComment(stopIntent, placesAdded);
+      if (experienceComment) {
+        cleanReply += " " + experienceComment;
+      }
+    }
+    
+    // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
+    if (placesApiFailed && stopIntent) {
+      cleanReply = sanitizeReplyForFailedPlaces(cleanReply, stopIntent);
+    }
     
     // デバッグログ
     console.log("[koyo-before] Cleaned reply:", cleanReply);
     // @ts-ignore - TypeScriptの型チェックが厳しすぎるため、型アサーションを使用
-    const hasSpotNames = matchedSpots != null && Array.isArray(matchedSpots) && matchedSpots.length > 0
-      ? (matchedSpots as any[]).some((spot: any) => cleanReply.includes(spot.name))
+    const hasSpotNames = finalSpots != null && Array.isArray(finalSpots) && finalSpots.length > 0
+      ? (finalSpots as any[]).some((spot: any) => cleanReply.includes(spot.name))
       : false;
     console.log("[koyo-before] Cleaned reply contains spot names:", hasSpotNames);
 
@@ -913,10 +1190,21 @@ G. その他（自由入力）
       response.plan = finalPlan;
     }
 
-    // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
-    // @ts-ignore - TypeScriptの型チェックが厳しすぎるため、型アサーションを使用
-    if (matchedSpots != null && Array.isArray(matchedSpots) && matchedSpots.length > 0) {
-      response.spots = matchedSpots;
+    // Places API統合（途中立ち寄り意図検出）
+    // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
+    const baseSpots = matchedSpots ?? [];
+    // チャット履歴から最初のStopIntentを含むメッセージを探す
+    const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+    const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+    // originが確定している場合は使用、そうでない場合はnull
+    const originForPlaces = aiOrigin && (aiOrigin.type === "fixed" || aiOrigin.type === "current") && aiOrigin.lat && aiOrigin.lng
+      ? { lat: aiOrigin.lat, lng: aiOrigin.lng }
+      : undefined;
+    const { spots: finalSpots, placesApiFailed, placesAdded } = await integratePlaces(baseSpots, stopIntent, originForPlaces, KOYO_COORDINATES);
+    
+    // フロントエンド互換性のため、統合後のspotsを返す
+    if (finalSpots != null && Array.isArray(finalSpots) && finalSpots.length > 0) {
+      response.spots = finalSpots;
     }
 
     // すべてのレスポンスに origin を含める
@@ -944,8 +1232,8 @@ G. その他（自由入力）
     }
 
     const waypoints =
-      matchedSpots && Array.isArray(matchedSpots)
-        ? matchedSpots
+      finalSpots && Array.isArray(finalSpots)
+        ? finalSpots
             .filter((s: any) => {
               // 座標の型と値の検証を強化
               const isValid = 
@@ -991,7 +1279,7 @@ G. その他（自由入力）
       destination: response.routeInfo.destination,
       waypointsCount: response.routeInfo.waypoints.length,
       waypoints: response.routeInfo.waypoints,
-      containsZawaoOkama: matchedSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
+      containsZawaoOkama: finalSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
     });
 
     return NextResponse.json(response);

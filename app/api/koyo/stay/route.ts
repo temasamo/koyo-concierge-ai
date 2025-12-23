@@ -1148,7 +1148,7 @@ async function handleFacilityOperation(
     });
   } catch (error: any) {
     console.error("[koyo-stay-facility] error:", error);
-    return NextResponse.json(
+      return NextResponse.json(
       {
         error: "施設案内AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
@@ -1158,8 +1158,8 @@ async function handleFacilityOperation(
         routeInfo: null,
       },
       { status: 500 }
-    );
-  }
+      );
+    }
 }
 
 /**
@@ -1175,12 +1175,12 @@ async function handleStayPlanner(
 
     // Supabaseからスポット一覧を取得してシステムプロンプトを生成
     const systemPrompt = await getSystemPrompt();
-    
+
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: systemPrompt },
       ...userMessages,
     ];
-    
+
     const openai = getOpenAIClient();
     const completion = await openai.chat.completions.create({
       model: CHAT_MODEL,
@@ -1188,16 +1188,16 @@ async function handleStayPlanner(
       temperature: 0.7,
       response_format: { type: "json_object" },
     });
-    
+
     const reply = completion.choices[0]?.message?.content ?? "";
-    
+
     // デバッグ: AIの応答をログ出力
     console.log("[koyo-stay] AI reply (first 500 chars):", reply.substring(0, 500));
-    
+
     // plan配列を抽出
     let planArray = await extractPlanFromReply(reply);
     console.log("[koyo-stay] Extracted plan array:", planArray ? `Found ${planArray.length} plans` : "No plan found");
-    
+
     // plan配列が取得できない場合、古い形式（配列形式）を試す
     if (!planArray) {
       console.log("[koyo-stay] Trying to extract old format (array)...");
@@ -1225,13 +1225,13 @@ async function handleStayPlanner(
         console.warn("[koyo-stay] Failed to extract old format:", error);
       }
     }
-    
+
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
     let placesApiFailed = false;
     let stopIntent: ReturnType<typeof detectStopIntent> = null;
-    
+
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
       
@@ -1242,7 +1242,7 @@ async function handleStayPlanner(
         matchedSpots = result.spots;
         placesApiFailed = result.placesApiFailed;
       }
-      
+
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
       if (matchedSpots && matchedSpots.length > 0) {
         finalPlan = planArray.map((plan, index) => {
@@ -1263,7 +1263,7 @@ async function handleStayPlanner(
         finalPlan = undefined;
       }
     }
-    
+
     // replyからJSON部分を除去してクリーンなメッセージにする
     let cleanReply = cleanReplyMessage(reply);
     
@@ -1281,18 +1281,18 @@ async function handleStayPlanner(
         ? matchedSpots.some(spot => cleanReply.includes(spot.name))
         : false
     );
-    
+
     // レスポンスを構築
     const response: any = {
       reply: cleanReply,
       usage: completion.usage,
     };
-    
+
     // planがある場合のみ追加
     if (finalPlan && finalPlan.length > 0) {
       response.plan = finalPlan;
     }
-    
+
     // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
     if (matchedSpots && matchedSpots.length > 0) {
       response.spots = matchedSpots;
@@ -1342,7 +1342,7 @@ async function handleStayPlanner(
       waypointsCount: response.routeInfo.waypoints.length,
       waypoints: response.routeInfo.waypoints,
     });
-    
+
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("[koyo-stay] error:", error);

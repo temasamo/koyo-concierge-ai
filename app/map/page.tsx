@@ -79,17 +79,17 @@ export default function MapPage() {
       {/* ヘッダー */}
       <div className="bg-white shadow-sm px-4 py-3 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center">
-          <button
-            onClick={() => router.push("/")}
-            className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            ← 戻る
-          </button>
-          {spots.length > 0 && (
-            <span className="ml-4 text-sm text-gray-600">
-              {spots.length}件のスポットを表示中
-            </span>
-          )}
+        <button
+          onClick={() => router.push("/")}
+          className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+        >
+          ← 戻る
+        </button>
+        {spots.length > 0 && (
+          <span className="ml-4 text-sm text-gray-600">
+            {spots.length}件のスポットを表示中
+          </span>
+        )}
         </div>
         <div className="flex items-center gap-2">
           {routeInfo && routeInfo.waypoints.length > 0 && (

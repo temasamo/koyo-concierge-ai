@@ -42,6 +42,9 @@ export default function Page() {
   const clearDestination = useSpotStore((s) => s.clearDestination);
   const setRouteInfo = useSpotStore((s) => s.setRouteInfo);
   const clearRouteInfo = useSpotStore((s) => s.clearRouteInfo);
+  const originInputMode = useSpotStore((s) => s.originInputMode);
+  const setOriginInputMode = useSpotStore((s) => s.setOriginInputMode);
+  const clearOriginInputMode = useSpotStore((s) => s.clearOriginInputMode);
   const setRoutePlan = useSpotStore((s) => s.setRoutePlan);
   const clearRoutePlan = useSpotStore((s) => s.clearRoutePlan);
   const routePlan = useSpotStore((s) => s.routePlan);
@@ -62,14 +65,15 @@ export default function Page() {
     // 地図ページから戻ってきた場合は、スポットを保持する
     const isReturningFromMap = prevPathnameRef.current === "/map" && pathname === "/";
     
-      // モードが実際に変わった時のみスポットをクリア（地図ページから戻った時はクリアしない）
-      if (prevModeRef.current !== mode) {
-        console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
-        clearSpots();
+    // モードが実際に変わった時のみスポットをクリア（地図ページから戻った時はクリアしない）
+    if (prevModeRef.current !== mode) {
+      console.log(`[page.tsx] Mode changed from ${prevModeRef.current} to ${mode}, clearing spots`);
+      clearSpots();
         clearOrigin();
         clearDestination();
         clearRouteInfo();
-        prevModeRef.current = mode;
+        clearOriginInputMode();
+      prevModeRef.current = mode;
     } else if (isReturningFromMap) {
       console.log(`[page.tsx] Returning from map page, keeping spots (count: ${spots.length})`);
     } else {
@@ -137,6 +141,7 @@ export default function Page() {
             userState: {
               origin: currentOrigin,
               destination: mode === "after" ? currentDestination : undefined,
+              originInputMode: originInputMode,
             },
           };
       
@@ -161,6 +166,17 @@ export default function Page() {
       console.log("[page.tsx] routePlan from API:", data.routePlan);
       console.log("[page.tsx] current origin in store:", origin);
       console.log("[page.tsx] current destination in store:", destination);
+
+      // 🔽 originInputMode の扱い
+      if (data.originInputMode === "free") {
+        // 自由入力モードを有効化
+        console.log("[page.tsx] Setting originInputMode: free");
+        setOriginInputMode("free");
+      } else if (data.originInputMode === undefined && originInputMode === "free") {
+        // APIレスポンスにoriginInputModeが含まれない = 削除を意味する（origin確定時）
+        console.log("[page.tsx] Clearing originInputMode (origin resolved)");
+        clearOriginInputMode();
+      }
 
       // 🔽 origin の扱いを修正
       if (data.origin && data.origin.type !== null) {
