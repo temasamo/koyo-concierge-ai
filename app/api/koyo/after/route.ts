@@ -12,6 +12,7 @@ import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
 import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 import type { OriginInfo } from "@/store/spots";
+import type { StopIntent } from "@/types/route";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
