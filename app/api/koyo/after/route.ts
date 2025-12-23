@@ -82,9 +82,30 @@ async function getSpotListForPrompt(): Promise<string> {
 /**
  * 帰宅後モードのシステムプロンプトを生成（Supabaseスポット一覧を自動注入）
  * After System Prompt (ver.2)
+ * @param stopIntent ユーザーの立ち寄り意図（オプショナル）
  */
-async function getSystemPrompt(): Promise<string> {
+async function getSystemPrompt(stopIntent?: { type: string; foodCategory?: string } | null): Promise<string> {
   const spotListText = await getSpotListForPrompt();
+  
+  // ユーザーの意図をシステムプロンプトに反映
+  let userIntentNote = "";
+  if (stopIntent && stopIntent.foodCategory) {
+    userIntentNote = `
+【ユーザーの希望（重要）】
+ユーザーは「${stopIntent.foodCategory}」を希望しています。
+reply内で食事について言及する際は、必ず「${stopIntent.foodCategory}」に関連する表現を使用してください。
+ただし、店名・固有名詞は絶対に出さないでください。
+
+例：
+- 「${stopIntent.foodCategory}を楽しむ時間を設ける」
+- 「${stopIntent.foodCategory}を味わう」
+- 「${stopIntent.foodCategory}を楽しむことができる場所に立ち寄る」
+
+NG例：
+- 「ラーメンを楽しむ」（ユーザーが「山形牛」を希望している場合）
+- 「◯◯で${stopIntent.foodCategory}」（店名を出すのは禁止）
+`;
+  }
 
   return `
 あなたは「日本の宿 古窯」の専属AIコンシェルジュです。
@@ -118,9 +139,11 @@ async function getSystemPrompt(): Promise<string> {
 【重要：飲食・休憩スポットについて】
 - 飲食店・カフェ・温泉・売店などの固有名詞（店名）は出さない
 - 「この旅の流れの中で立ち寄りやすい場所で」
-  「温かいラーメンを楽しむ」
+  「温かい食事を楽しむ」
   など抽象的な表現を使用する
+- ユーザーが特定の食べ物を希望している場合は、その食べ物に関連する表現を使用すること
 - NG例：「◯◯でラーメン」「食事処△△」
+${userIntentNote}
 
 【季節ルール】
 - 冬（12〜3月）は安全配慮の文言を必ず追加する。
@@ -430,6 +453,169 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
 }
 
 /**
+ * チャット履歴から最初のStopIntentを含むメッセージを探す
+ * @param userMessages チャット履歴
+ * @returns StopIntentを含む最初のメッセージ（見つからない場合はnull）
+ */
+function findStopIntentMessage(userMessages: ChatCompletionMessageParam[]): string | null {
+  // チャット履歴を時系列順（古い順）で確認
+  for (const message of userMessages) {
+    if (message.role === "user" && typeof message.content === "string") {
+      const stopIntent = detectStopIntent(message.content);
+      if (stopIntent) {
+        console.log("[koyo-after] Found stopIntent in message:", message.content, "stopIntent:", stopIntent);
+        return message.content;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
+ * @param reply 元のreply
+ * @param stopIntent StopIntent（nullの場合はそのまま返す）
+ * @returns サニタイズされたreply
+ */
+function sanitizeReplyForFailedPlaces(
+  reply: string,
+  stopIntent: StopIntent | null
+): string {
+  if (!stopIntent || stopIntent.type !== "lunch") {
+    // lunch以外は対象外（フェーズ1.5ではlunchのみ）
+    return reply;
+  }
+  
+  let sanitized = reply;
+  
+  // 山形牛・米沢牛などの特定食材名の断定表現を削除
+  sanitized = sanitized.replace(/山形牛[^。]*。/g, "旅の流れに合わせて、周辺で食事の時間をお取りください。");
+  sanitized = sanitized.replace(/米沢牛[^。]*。/g, "旅の流れに合わせて、周辺で食事の時間をお取りください。");
+  
+  // 名物・特定料理名の断定表現を削除
+  sanitized = sanitized.replace(/名物[^。]*。/g, "地元ならではの食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/芋煮[^。]*。/g, "地元ならではの温かい食事を楽しむ時間を設けるのもおすすめです。");
+  sanitized = sanitized.replace(/ラーメン[^。]*。/g, "旅の流れに合わせて、温かい食事の時間をお取りください。");
+  sanitized = sanitized.replace(/そば[^。]*。/g, "旅の流れに合わせて、食事の時間をお取りください。");
+  
+  // 特定体験の断定表現を弱める
+  sanitized = sanitized.replace(/地元の味[^。]*。/g, "地元ならではの食事を楽しむ時間を設けるのもおすすめです。");
+  
+  return sanitized;
+}
+
+/**
+ * reply内のスポット名の順序をfinalPlanの順序に合わせて修正する関数
+ * @param reply 元のreply
+ * @param finalSpotsOrder finalPlan[0].spotsの順序（スポット名の配列）
+ * @returns 順序を修正したreply
+ */
+function reorderReplySpots(reply: string, finalSpotsOrder: string[]): string {
+  if (!finalSpotsOrder || finalSpotsOrder.length === 0) {
+    return reply;
+  }
+
+  // reply内のスポット名を抽出（finalSpotsOrderに含まれるもののみ）
+  // 複数回出現する可能性があるため、最初の出現位置のみを記録
+  const foundSpots: Array<{ name: string; index: number }> = [];
+  for (const spotName of finalSpotsOrder) {
+    const index = reply.indexOf(spotName);
+    if (index !== -1) {
+      foundSpots.push({ name: spotName, index });
+    }
+  }
+
+  // 見つかったスポットが2つ未満の場合は順序修正不要
+  if (foundSpots.length < 2) {
+    return reply;
+  }
+
+  // reply内のスポット名の出現順序を確認
+  const replyOrder = foundSpots.sort((a, b) => a.index - b.index).map(s => s.name);
+  const finalOrder = finalSpotsOrder.filter(name => replyOrder.includes(name));
+
+  // 順序が一致している場合は修正不要
+  if (replyOrder.join(',') === finalOrder.join(',')) {
+    return reply;
+  }
+
+  // 順序が異なる場合、replyを再構築
+  // 各スポット名を含む文を抽出し、finalSpotsOrderの順序に合わせて並び替え
+  const spotSentences: Array<{ name: string; sentence: string; originalIndex: number }> = [];
+  
+  // replyを文単位に分割（「。」で区切る）
+  const sentences = reply.split('。').filter(s => s.trim().length > 0);
+  
+  for (let i = 0; i < sentences.length; i++) {
+    const sentence = sentences[i];
+    for (const spotName of finalOrder) {
+      if (sentence.includes(spotName)) {
+        spotSentences.push({
+          name: spotName,
+          sentence: sentence.trim(),
+          originalIndex: i,
+        });
+        break; // 1つの文に複数のスポット名が含まれる場合は最初のもののみ
+      }
+    }
+  }
+
+  // finalSpotsOrderの順序に合わせて文を並び替え
+  const reorderedSentences: string[] = [];
+  const usedSentences = new Set<number>();
+  
+  for (const spotName of finalOrder) {
+    const spotSentence = spotSentences.find(s => s.name === spotName && !usedSentences.has(s.originalIndex));
+    if (spotSentence) {
+      reorderedSentences.push(spotSentence.sentence);
+      usedSentences.add(spotSentence.originalIndex);
+    }
+  }
+
+  // スポット名を含まない文も保持（順序は維持）
+  const nonSpotSentences: string[] = [];
+  for (let i = 0; i < sentences.length; i++) {
+    if (!usedSentences.has(i)) {
+      nonSpotSentences.push(sentences[i].trim());
+    }
+  }
+
+  // 再構築：スポット名を含む文をfinalSpotsOrderの順序で配置し、その他の文は元の位置に配置
+  const resultSentences: string[] = [];
+  let spotIndex = 0;
+  
+  for (let i = 0; i < sentences.length; i++) {
+    if (usedSentences.has(i)) {
+      // スポット名を含む文は、finalSpotsOrderの順序で配置
+      if (spotIndex < reorderedSentences.length) {
+        resultSentences.push(reorderedSentences[spotIndex]);
+        spotIndex++;
+      }
+    } else {
+      // スポット名を含まない文は元の位置に配置
+      resultSentences.push(sentences[i].trim());
+    }
+  }
+
+  // 残りのスポット名を含む文を追加（元のreplyに含まれていなかった場合）
+  while (spotIndex < reorderedSentences.length) {
+    resultSentences.push(reorderedSentences[spotIndex]);
+    spotIndex++;
+  }
+
+  const reorderedReply = resultSentences.join('。') + '。';
+  
+  console.log("[koyo-after] Reply spot order reordered:", {
+    originalOrder: replyOrder,
+    finalOrder: finalOrder,
+    originalReply: reply.substring(0, 150),
+    reorderedReply: reorderedReply.substring(0, 150),
+  });
+
+  return reorderedReply;
+}
+
+/**
  * replyからJSON部分を除去してクリーンなメッセージを返す関数
  * 新しい形式: { plan: [...] } に対応
  */
@@ -533,8 +719,12 @@ export async function POST(req: NextRequest) {
       pref: currentDestination?.pref,
     });
 
+    // 途中立ち寄り意図を検出（システムプロンプト生成前に検出）
+    const stopIntentMessageForPrompt = findStopIntentMessage(userMessages) || userMessage;
+    const stopIntentForPrompt = detectStopIntent(stopIntentMessageForPrompt);
+    
     // Supabaseからスポット一覧を取得してシステムプロンプトを生成
-    const systemPrompt = await getSystemPrompt();
+    const systemPrompt = await getSystemPrompt(stopIntentForPrompt);
 
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: systemPrompt },
@@ -743,18 +933,65 @@ F. その他
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
     let placesApiFailed = false;
+    let placesAdded = false;
 
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
+    }
 
-      // 途中立ち寄り意図を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
-      if (matchedSpots && matchedSpots.length > 0) {
-        const stopIntent = detectStopIntent(userMessage);
-        const result = await integratePlaces(matchedSpots, stopIntent);
-        matchedSpots = result.spots;
-        placesApiFailed = result.placesApiFailed;
+    // 途中立ち寄り意図を検出してPlaces APIを呼び出す（matchedSpotsが空でもstopIntentがあれば呼ぶ）
+    // チャット履歴から最初のStopIntentを含むメッセージを探す
+    const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+    const stopIntent = detectStopIntent(stopIntentMessage);
+    
+    console.log("[koyo-after] StopIntent detection:", {
+      stopIntentMessage,
+      stopIntent,
+      userMessage,
+      matchedSpotsCount: matchedSpots?.length || 0,
+      hasDestination,
+      currentDestination,
+    });
+    
+    if (stopIntent) {
+      // destination座標を取得（integratePlacesで使用）
+      let destinationCoords: { lat: number; lng: number } | undefined;
+      
+      if (hasDestination && currentDestination) {
+        if (currentDestination.type === "pref-boundary" && currentDestination.pref) {
+          destinationCoords = getPrefBoundary(currentDestination.pref as PrefectureKey);
+        } else if ((currentDestination.type === "fixed" || currentDestination.type === "current") && currentDestination.lat && currentDestination.lng) {
+          destinationCoords = {
+            lat: currentDestination.lat,
+            lng: currentDestination.lng,
+          };
+        }
       }
+      
+      // destinationが未設定の場合はKOYO_COORDINATESを使用
+      if (!destinationCoords) {
+        destinationCoords = KOYO_COORDINATES;
+      }
+      
+      const result = await integratePlaces(
+        matchedSpots || [],
+        stopIntent,
+        KOYO_COORDINATES, // originは常に古窯固定
+        destinationCoords
+      );
+      
+      matchedSpots = result.spots;
+      placesApiFailed = result.placesApiFailed;
+      placesAdded = result.placesAdded;
+      
+      console.log("[koyo-after] Places integration result:", {
+        placesApiFailed,
+        placesAdded,
+        spotsCount: matchedSpots?.length || 0,
+      });
+    }
 
+    if (planArray && planArray.length > 0) {
       // plan配列を構築（plan[0].spotsをマッチング済みスポットに置き換え）
       if (matchedSpots && matchedSpots.length > 0) {
         finalPlan = planArray.map((plan, index) => {
@@ -779,7 +1016,15 @@ F. その他
     // replyからJSON部分を除去してクリーンなメッセージにする
     let cleanReply = cleanReplyMessage(reply);
 
-    // Places API結果はreplyに追記しない（フェーズ1: AIは店名を知らない）
+    // placesAddedフラグに応じて固定文言のコメントを追加
+    if (placesAdded && stopIntent) {
+      cleanReply += " 帰路に無理なくご希望の場所を組み込みました。";
+    }
+
+    // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
+    if (placesApiFailed && stopIntent) {
+      cleanReply = sanitizeReplyForFailedPlaces(cleanReply, stopIntent);
+    }
 
     // レスポンスを構築
     const response: any = {

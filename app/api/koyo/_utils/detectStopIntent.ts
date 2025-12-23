@@ -46,7 +46,7 @@ export function detectStopIntent(message: string): StopIntent | null {
   }> = [
     {
       type: "lunch",
-      keywords: ["ランチ", "昼食", "お昼", "昼ごはん", "昼飯", "食べたい", "ご飯", "食事"],
+      keywords: ["ランチ", "昼食", "お昼", "昼ごはん", "昼飯", "食べたい", "食べて", "ご飯", "食事"],
       fallbackKeyword: "ランチ",
       foodCategoryKeywords: [
         { foodCategory: "ラーメン", patterns: ["ラーメン", "らーめん"] },
