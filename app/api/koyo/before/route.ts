@@ -1119,6 +1119,8 @@ G. その他（自由入力）
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
+    let placesApiFailed = false;
+    let placesAdded = false;
 
     // 型ガード: planArrayが存在し、配列で、要素があることを確認
     // @ts-ignore - TypeScriptの型チェックが厳しすぎるため、型アサーションを使用
@@ -1152,6 +1154,51 @@ G. その他（自由入力）
         // スポットが0件の場合はplanを返さない
         finalPlan = undefined;
       }
+    }
+
+    // 途中立ち寄り意図を検出してPlaces APIを呼び出す（matchedSpotsが空でもstopIntentがあれば呼ぶ）
+    // チャット履歴から最初のStopIntentを含むメッセージを探す
+    const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+    const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+    
+    if (stopIntent) {
+      // destination座標を取得（integratePlacesで使用）
+      let destinationCoords: { lat: number; lng: number } | undefined;
+      
+      if (hasOrigin && currentOrigin) {
+        if (currentOrigin.type === "pref-boundary" && currentOrigin.pref) {
+          destinationCoords = getPrefBoundary(currentOrigin.pref as PrefectureKey);
+        } else if ((currentOrigin.type === "fixed" || currentOrigin.type === "current") && currentOrigin.lat && currentOrigin.lng) {
+          destinationCoords = {
+            lat: currentOrigin.lat,
+            lng: currentOrigin.lng,
+          };
+        }
+      }
+      
+      // destinationが未設定の場合はKOYO_COORDINATESを使用
+      if (!destinationCoords) {
+        destinationCoords = KOYO_COORDINATES;
+      }
+      
+      const result = await integratePlaces(
+        matchedSpots || [],
+        stopIntent,
+        currentOrigin && currentOrigin.lat && currentOrigin.lng
+          ? { lat: currentOrigin.lat, lng: currentOrigin.lng }
+          : KOYO_COORDINATES,
+        destinationCoords
+      );
+      
+      matchedSpots = result.spots;
+      placesApiFailed = result.placesApiFailed;
+      placesAdded = result.placesAdded;
+      
+      console.log("[koyo-before] Places integration result (E section):", {
+        placesApiFailed,
+        placesAdded,
+        spotsCount: matchedSpots?.length || 0,
+      });
     }
 
     // replyからJSON部分を除去してクリーンなメッセージにする
