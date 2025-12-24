@@ -33,7 +33,12 @@ export function parseOriginSelection(message: string): Origin | { useCurrentLoca
 
   const m = message.trim().toUpperCase();
 
-  // 1. ラベル（A, B, C, D, E）で直接指定された場合
+  // 1. ラベル（A, B, C, D, E, F）で直接指定された場合
+  // F: 現在地を使用
+  if (m === "F") {
+    return { useCurrentLocation: true };
+  }
+  
   if (PRECHECKIN_ORIGINS[m]) {
     return PRECHECKIN_ORIGINS[m];
   }
