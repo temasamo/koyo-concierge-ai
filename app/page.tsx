@@ -6,7 +6,7 @@ import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
 import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
-import { useSpotStore } from "@/store/spots";
+import { useSpotStore, type OriginInfo } from "@/store/spots";
 import { useMessageStore } from "@/store/messages";
 import type { Msg } from "@/store/messages";
 import type { RoutePlan } from "@/types/route";
@@ -52,6 +52,7 @@ export default function Page() {
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   const prevModeRef = useRef<KoyoMode>(mode);
   const prevPathnameRef = useRef<string | null>(null);
+  const autoResendRef = useRef(false); // 現在地取得後の自動再送信を防ぐフラグ
   
   useEffect(() => {
     const currentMessages = useMessageStore.getState().getMessages(mode);
@@ -87,11 +88,141 @@ export default function Page() {
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
 
+  /**
+   * userStateを明示的に指定してメッセージを送信する関数
+   * 現在地取得後の自動再送信などで使用
+   */
+  const sendMessageWithUserState = async (params: {
+    text: string;
+    userState: {
+      origin?: OriginInfo;
+      destination?: OriginInfo;
+      originInputMode?: "free" | "current_location" | undefined;
+    };
+  }) => {
+    if (isLoading) return;
+    
+    setIsLoading(true);
+    
+    try {
+      // ユーザーのメッセージを追加
+      addMessage(mode, { role: "user", content: params.text });
+      
+      // 現在の messages を取得
+      const currentMessages = useMessageStore.getState().getMessages(mode);
+      const latestMessages = [
+        ...currentMessages,
+        { role: "user", content: params.text }
+      ];
+      
+      // エンドポイントを決定（ルート編集は考慮しない）
+      const apiEndpoint = `/api/koyo/${mode}`;
+      
+      // API コール（userStateを明示的に指定）
+      const requestBody = {
+        messages: latestMessages,
+        userState: {
+          origin: params.userState.origin,
+          destination: mode === "after" ? params.userState.destination : undefined,
+          originInputMode: params.userState.originInputMode,
+        },
+      };
+      
+      console.log("[page.tsx] sendMessageWithUserState - requestBody:", requestBody);
+      
+      const res = await fetch(apiEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API Error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // レスポンス処理（onSendと同じロジック）
+      // originInputMode の扱い
+      const currentOriginInputMode = useSpotStore.getState().originInputMode;
+      if (data.originInputMode === "free") {
+        setOriginInputMode("free");
+      } else if (data.originInputMode === "current_location") {
+        setOriginInputMode("current_location");
+      } else if (data.originInputMode === undefined && currentOriginInputMode) {
+        clearOriginInputMode();
+      }
+      
+      // origin の扱い
+      if (data.origin && data.origin.type !== null) {
+        setOrigin(data.origin);
+      } else {
+        clearOrigin();
+      }
+      
+      // destination の扱い（Afterモードのみ）
+      if (mode === "after") {
+        if (data.destination && data.destination.type !== null) {
+          setDestination(data.destination);
+        }
+      } else {
+        clearDestination();
+      }
+      
+      // routeInfo の扱い
+      if (data.routeInfo) {
+        setRouteInfo(data.routeInfo);
+      } else {
+        clearRouteInfo();
+      }
+      
+      // RoutePlan の更新
+      if (data.spots && Array.isArray(data.spots) && data.spots.length > 0 && data.routeInfo) {
+        const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const modeUpper = mode.toUpperCase() as "BEFORE" | "STAY" | "AFTER";
+        const newRoutePlan: RoutePlan = {
+          planId,
+          mode: modeUpper,
+          origin: data.routeInfo.origin,
+          destination: data.routeInfo.destination,
+          spots: data.spots,
+          createdAt: new Date().toISOString(),
+        };
+        setRoutePlan(newRoutePlan);
+      }
+      
+      // AIの返答を追加
+      if (data.reply) {
+        addMessage(mode, { role: "assistant", content: data.reply });
+      }
+      
+      // スポットを設定
+      if (data.spots && Array.isArray(data.spots)) {
+        setSpots(data.spots);
+      }
+      
+    } catch (error: any) {
+      console.error("[page.tsx] sendMessageWithUserState error:", error);
+      addMessage(mode, {
+        role: "assistant",
+        content: "エラーが発生しました。もう一度お試しください。",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const onSend = async (inputMessage: string) => {
-    if (!inputMessage.trim() || isLoading) return;
+    // 現在地確定通知の場合は空文字でも許可
+    if ((!inputMessage.trim() && !autoResendRef.current) || isLoading) return;
 
     // 送信中フラグ ON
     setIsLoading(true);
+    
+    // 自動再送信フラグをリセット
+    if (autoResendRef.current) {
+      autoResendRef.current = false;
+    }
 
     try {
       // ① まずユーザーのメッセージを追加
@@ -172,7 +303,66 @@ export default function Page() {
         // 自由入力モードを有効化
         console.log("[page.tsx] Setting originInputMode: free");
         setOriginInputMode("free");
-      } else if (data.originInputMode === undefined && originInputMode === "free") {
+      } else if (data.originInputMode === "current_location") {
+        // 現在地取得モードを有効化
+        console.log("[page.tsx] Setting originInputMode: current_location");
+        setOriginInputMode("current_location");
+        // Geolocation APIを実行
+        if (navigator.geolocation) {
+          console.log("[page.tsx] 🔍 Geolocation requested");
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              console.log("[page.tsx] ✅ Geolocation success:", {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+              });
+              // 現在地をoriginに設定
+              const currentOrigin = {
+                type: "current" as const,
+                pref: null,
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+                name: "現在地",
+              };
+              
+              setOrigin(currentOrigin);
+              
+              // ❌ onSend("現在地を使います") は使わない
+              // ✅ originを含めて明示的に送信
+              console.log("[page.tsx] Sending message with current location origin");
+              sendMessageWithUserState({
+                text: "現在地を使用します",
+                userState: {
+                  origin: currentOrigin,
+                  originInputMode: undefined, // 確定扱い
+                },
+              });
+            },
+            (error) => {
+              console.error("[page.tsx] ❌ Geolocation failure:", error);
+              // エラーメッセージを表示
+              addMessage(mode, {
+                role: "assistant",
+                content: "現在地が取得できませんでした。位置情報の許可を確認するか、別の出発地（A〜E）を選択してください。",
+              });
+              // originInputModeをクリアして、通常の選択肢に戻す
+              clearOriginInputMode();
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0,
+            }
+          );
+        } else {
+          console.error("[page.tsx] ❌ Geolocation not supported");
+          addMessage(mode, {
+            role: "assistant",
+            content: "お使いのブラウザでは位置情報が取得できません。別の出発地（A〜E）を選択してください。",
+          });
+          clearOriginInputMode();
+        }
+      } else if (data.originInputMode === undefined && (originInputMode === "free" || originInputMode === "current_location")) {
         // APIレスポンスにoriginInputModeが含まれない = 削除を意味する（origin確定時）
         console.log("[page.tsx] Clearing originInputMode (origin resolved)");
         clearOriginInputMode();

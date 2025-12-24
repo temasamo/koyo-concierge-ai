@@ -64,8 +64,8 @@ type SpotStore = {
   setRouteLegs: (routeLegs: RouteLegInfo[]) => void;
   clearRouteLegs: () => void;
   // 自由入力モード管理
-  originInputMode: "free" | undefined;
-  setOriginInputMode: (mode: "free" | undefined) => void;
+  originInputMode: "free" | "current_location" | undefined;
+  setOriginInputMode: (mode: "free" | "current_location" | undefined) => void;
   clearOriginInputMode: () => void;
 };
 

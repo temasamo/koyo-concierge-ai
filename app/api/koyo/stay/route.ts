@@ -1145,8 +1145,10 @@ async function handleFacilityOperation(
       spots: [],
       routeInfo: null,
       usage: completion.usage,
+      debug: { branch: "stay:facility_query" },
     });
   } catch (error: any) {
+    console.error("[koyo-stay-facility] ❌ BRANCH: facility_query ERROR:", error);
     console.error("[koyo-stay-facility] error:", error);
       return NextResponse.json(
       {
@@ -1156,6 +1158,7 @@ async function handleFacilityOperation(
         plan: [],
         spots: [],
         routeInfo: null,
+        debug: { branch: "stay:facility_query:error" },
       },
       { status: 500 }
       );
@@ -1343,13 +1346,20 @@ async function handleStayPlanner(
       waypoints: response.routeInfo.waypoints,
     });
 
+    response.debug = { branch: "stay:outdoor_plan" };
     return NextResponse.json(response);
   } catch (error: any) {
+    console.error("[koyo-stay] ❌ BRANCH: outdoor_plan ERROR:", error);
     console.error("[koyo-stay] error:", error);
     return NextResponse.json(
       {
         error: "旅中AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
+        reply: "申し訳ございません。エラーが発生しました。",
+        plan: [],
+        spots: [],
+        routeInfo: null,
+        debug: { branch: "stay:UNHANDLED_ERROR" },
       },
       { status: 500 }
     );
@@ -1396,22 +1406,35 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 分岐トレースログ：入力情報
+    const normalizedMessage = userMessage.trim().toUpperCase();
+    console.log("[koyo-stay] 🔍 BRANCH TRACE - Input:", {
+      userMessageRaw: userMessage,
+      userMessageNormalized: normalizedMessage,
+      gender,
+    });
+
     // ルーティング: detectStopIntent を最優先で評価（外出意図の判定）
     const stopIntent = detectStopIntent(userMessage);
-    console.log("[koyo-stay] User message:", userMessage);
-    console.log("[koyo-stay] StopIntent detected:", stopIntent);
+    const isFacility = isFacilityQuery(userMessage);
+    
+    // 分岐トレースログ：判定結果
+    console.log("[koyo-stay] 🔍 BRANCH TRACE - Conditions:", {
+      stopIntent: stopIntent ? { type: stopIntent.type, foodCategory: stopIntent.foodCategory } : null,
+      isFacilityQuery: isFacility,
+    });
     
     if (stopIntent) {
       // 外出プランとして処理（温泉・ランチ・カフェなど）
-      console.log("[koyo-stay] ⭐ Routing to Stay Planner AI (outdoor intent detected)");
+      console.log("[koyo-stay] ✅ BRANCH: outdoor_plan (stopIntent detected)");
       return handleStayPlanner(userMessages);
-    } else if (isFacilityQuery(userMessage)) {
+    } else if (isFacility) {
       // 館内施設案内（利用情報の問い合わせ）
-      console.log("[koyo-stay] ⭐ Routing to Facility Operation AI");
+      console.log("[koyo-stay] ✅ BRANCH: facility_query (isFacilityQuery=true)");
       return handleFacilityOperation(userMessages, gender);
     } else {
       // デフォルトは外出プラン
-      console.log("[koyo-stay] ⭐ Routing to Stay Planner AI (default)");
+      console.log("[koyo-stay] ✅ BRANCH: default_plan (fallback)");
       return handleStayPlanner(userMessages);
     }
   } catch (error: any) {

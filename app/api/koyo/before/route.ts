@@ -6,6 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
 import { detectPreCheckinIntent } from "@/lib/koyo/intents";
 import { parseOriginSelection, type Origin } from "@/lib/koyo/precheckin/origins";
+import { normalizeUserSelection } from "@/lib/koyo/text/normalizeUserSelection";
 import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckinPlan";
 import { resolveOriginFromFreeInput, getOriginFromPrefecture } from "./_utils/originResolver";
 import type { PrefectureKey } from "./_constants/prefEntryPoints";
@@ -592,8 +593,8 @@ function isGSelectedInHistory(userMessages: ChatCompletionMessageParam[]): boole
  * - userState: ユーザーの状態（origin、originInputModeなど）
  */
 type BeforeRequestBody =
-  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo; originInputMode?: "free" } }
-  | { query: string; userState?: { origin?: OriginInfo; originInputMode?: "free" } };
+  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo; originInputMode?: "free" | "current_location" } }
+  | { query: string; userState?: { origin?: OriginInfo; originInputMode?: "free" | "current_location" } };
 
 // デフォルトの origin 値
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -632,37 +633,73 @@ export async function POST(req: NextRequest) {
     const currentOrigin: OriginInfo = userState.origin || DEFAULT_ORIGIN;
     const originInputMode = userState.originInputMode;
     
-    console.log("[koyo-before] Received userState:", {
-      userState,
+    // 分岐トレースログ：入力情報
+    const normalizedMessage = userMessage.trim().toUpperCase();
+    console.log("[koyo-before] 🔍 BRANCH TRACE - Input:", {
+      userMessageRaw: userMessage,
+      userMessageNormalized: normalizedMessage,
       currentOrigin,
       originType: currentOrigin?.type,
       originPref: currentOrigin?.pref,
       originInputMode,
-      userMessage,
     });
 
-    const hasOrigin =
+    let hasOrigin =
       currentOrigin &&
       currentOrigin.type !== null &&
       // pref-boundary の場合は lat/lng が null でも OK
+      // current の場合は lat/lng が必須
       (currentOrigin.type === "pref-boundary" ||
-        (currentOrigin.lat !== null && currentOrigin.lng !== null));
-
-    console.log("[koyo-before] Debug origin check:", {
-      currentOrigin,
-      hasOrigin,
-      type: currentOrigin?.type,
-      pref: currentOrigin?.pref,
-    });
+        (currentOrigin.type === "current" && currentOrigin.lat !== null && currentOrigin.lng !== null) ||
+        (currentOrigin.type === "fixed" && currentOrigin.lat !== null && currentOrigin.lng !== null));
+    
+    // origin.type === "current" かつ lat/lng があれば無条件で hasOrigin = true
+    if (
+      currentOrigin?.type === "current" &&
+      typeof currentOrigin.lat === "number" &&
+      typeof currentOrigin.lng === "number"
+    ) {
+      hasOrigin = true;
+      console.log("[koyo-before] ✅ current location origin confirmed", {
+        lat: currentOrigin.lat,
+        lng: currentOrigin.lng,
+      });
+    }
+    
+    // ログ追加（確認用）
+    console.log("[koyo-before] ORIGIN FINAL:", currentOrigin);
+    console.log("[koyo-before] hasOrigin =", hasOrigin);
 
     const isPreCheckinIntent = detectPreCheckinIntent(userMessage);
-    const originSelection = parseOriginSelection(userMessage); // 「A〜G」などの返答
+    // ユーザー選択入力を正規化してからパース
+    const userMessageNormalized = normalizeUserSelection(userMessage);
+    const originSelection = parseOriginSelection(userMessageNormalized); // 「A〜G」などの返答
+    
+    // Gが選択された場合を明示的に検出（Bセクションより前にチェック）
+    const isGSelected = userMessage.trim().toUpperCase() === "G";
+    
+    // チャット履歴から最初のStopIntentを含むメッセージを探す
+    const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
+    const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+    
+    // 分岐トレースログ：判定結果
+    console.log("[koyo-before] 🔍 BRANCH TRACE - Conditions:", {
+      hasOrigin,
+      originSelection: originSelection ? { name: "name" in originSelection ? originSelection.name : "useCurrentLocation" } : null,
+      isGSelected,
+      originInputMode,
+      isPreCheckinIntent,
+      stopIntent: stopIntent ? { type: stopIntent.type, foodCategory: stopIntent.foodCategory } : null,
+      currentOrigin: currentOrigin ? { type: currentOrigin.type, lat: currentOrigin.lat, lng: currentOrigin.lng } : null,
+    });
 
     // --------------------------------------------------
     // A. すでに origin が決まっている場合
     //    → 「Pre-Checkin プラン生成モード」とみなす
+    //    ❗ B_origin_select を絶対に通さない
     // --------------------------------------------------
     if (hasOrigin) {
+      console.log("[koyo-before] ✅ BRANCH: A_precheckin_plan (hasOrigin=true)");
       try {
         let originForPlan: Origin;
         let prefecture: PrefectureKey | undefined;
@@ -740,6 +777,9 @@ export async function POST(req: NextRequest) {
         }
 
         // ✅ Pre-Checkin 時だけ origin を返す
+        // originInputMode が "current_location" の場合は削除（現在地確定完了を意味する）
+        const responseOriginInputMode = originInputMode === "current_location" ? undefined : originInputMode;
+        
         return NextResponse.json({
           ...plan,
           spots: finalSpots,
@@ -750,14 +790,18 @@ export async function POST(req: NextRequest) {
             waypoints,
             destination,
           },
+          ...(responseOriginInputMode !== undefined && { originInputMode: responseOriginInputMode }),
+          debug: { branch: "before:A_precheckin_plan" },
         });
       } catch (error: any) {
+        console.error("[koyo-before] ❌ BRANCH: A_precheckin_plan ERROR:", error);
         console.error("[koyo-before] Pre-Checkin plan generation error:", error);
         return NextResponse.json(
           {
             error: "Pre-Checkinプランの生成中にエラーが発生しました。",
             detail: error?.message ?? String(error),
             origin: currentOrigin,
+            debug: { branch: "before:A_precheckin_plan:error" },
           },
           { status: 500 }
         );
@@ -773,11 +817,9 @@ export async function POST(req: NextRequest) {
     //    ※ 自由入力モード中はスキップ（A〜Gの選択肢を再表示しない）
     //    ※ 「G」が選択された場合はDセクションで処理するため、ここでは除外
     // --------------------------------------------------
-    // Gが選択された場合を明示的に検出（Bセクションより前にチェック）
-    const isGSelected = userMessage.trim().toUpperCase() === "G";
-    
     // 自由入力モード中はBセクションをスキップ
-    if (!originSelection && !isGSelected && originInputMode !== "free") {
+    if (!originSelection && !isGSelected && originInputMode !== "free" && originInputMode !== "current_location") {
+      console.log("[koyo-before] ✅ BRANCH: B_origin_select (origin未確定、選択肢提示)");
       return NextResponse.json({
         mode: "precheckin-origin-select",
         reply: `
@@ -795,6 +837,7 @@ G. その他（自由入力）
 例：「A」「空港」「現在地で」など簡単でOKです！
 `.trim(),
         origin: DEFAULT_ORIGIN, // まだ決まっていない
+        debug: { branch: "before:B_origin_select" },
       });
     }
 
@@ -802,14 +845,19 @@ G. その他（自由入力）
     // C. A〜G の選択に対する回答（originSelection が取れた場合）
     // --------------------------------------------------
     if (originSelection) {
+      console.log("[koyo-before] ✅ BRANCH: C_origin_selected (originSelection解析成功)");
       // F. 現在地を使う
       if ("useCurrentLocation" in originSelection && originSelection.useCurrentLocation) {
+        console.log("[koyo-before] ✅ BRANCH: C_current_location (F選択、現在地要求)");
+        console.log("[koyo-before] 🔍 Geolocation requested - setting originInputMode: current_location");
         return NextResponse.json({
           mode: "precheckin-origin-select",
           reply:
             "現在地を使用する場合は、ブラウザの位置情報を許可してください。位置情報が取得できない場合は、A〜Eから選択してください。",
           requiresLocation: true,
           origin: DEFAULT_ORIGIN,
+          originInputMode: "current_location", // 現在地取得モードを有効化
+          debug: { branch: "before:C_current_location" },
         });
       }
 
@@ -871,14 +919,17 @@ G. その他（自由入力）
               waypoints,
               destination: KOYO_COORDINATES,
             },
+            debug: { branch: "before:C_origin_selected" },
           });
         } catch (error: any) {
+          console.error("[koyo-before] ❌ BRANCH: C_origin_selected ERROR:", error);
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
           return NextResponse.json(
             {
               error: "Pre-Checkinプランの生成中にエラーが発生しました。",
               detail: error?.message ?? String(error),
               origin: DEFAULT_ORIGIN,
+              debug: { branch: "before:C_origin_selected:error" },
             },
             { status: 500 }
           );
@@ -1018,14 +1069,17 @@ G. その他（自由入力）
               destination: KOYO_COORDINATES,
             },
             // originInputModeは含めない（削除を意味する）
+            debug: { branch: "before:D_free_input_resolved" },
           });
         } catch (error: any) {
+          console.error("[koyo-before] ❌ BRANCH: D_free_input_resolve ERROR:", error);
           console.error("[koyo-before] Pre-Checkin plan generation error:", error);
           return NextResponse.json(
             {
               error: "Pre-Checkinプランの生成中にエラーが発生しました。",
               detail: error?.message ?? String(error),
               origin: DEFAULT_ORIGIN,
+              debug: { branch: "before:D_free_input_resolve:error" },
             },
             { status: 500 }
           );
@@ -1034,6 +1088,7 @@ G. その他（自由入力）
 
       if (resolution.type === "ambiguous") {
         // 曖昧な場合はoriginInputModeを維持（次の入力で再試行）
+        console.log("[koyo-before] ✅ BRANCH: D_free_input_ambiguous (県境が曖昧)");
         return NextResponse.json({
           type: "ask-pref",
           mode: "precheckin-origin-select",
@@ -1042,16 +1097,19 @@ G. その他（自由入力）
           choices: resolution.candidates,
           origin: DEFAULT_ORIGIN,
           originInputMode: "free", // 自由入力モードを維持
+          debug: { branch: "before:D_free_input_ambiguous" },
         });
       }
 
       if (resolution.type === "unknown") {
         // 不明な場合もoriginInputModeを維持（再入力を促す）
+        console.log("[koyo-before] ✅ BRANCH: D_free_input_unknown (出発地が不明)");
         return NextResponse.json({
           mode: "precheckin-origin-select",
           reply: resolution.message,
           origin: DEFAULT_ORIGIN,
           originInputMode: "free", // 自由入力モードを維持
+          debug: { branch: "before:D_free_input_unknown" },
         });
       }
     }
@@ -1061,8 +1119,8 @@ G. その他（自由入力）
     // --------------------------------------------------
 
     // Beforeモードではorigin未確定なら必ず出発地を聞く（状態ベースで判定）
-    // ただし、自由入力モード中はスキップ（A〜Gの選択肢を再表示しない）
-    if (!hasOrigin && !originSelection && originInputMode !== "free") {
+    // ただし、自由入力モード中または現在地取得モード中はスキップ（A〜Gの選択肢を再表示しない）
+    if (!hasOrigin && !originSelection && originInputMode !== "free" && originInputMode !== "current_location") {
       return NextResponse.json({
         mode: "precheckin-origin-select",
         reply: `
@@ -1157,10 +1215,7 @@ G. その他（自由入力）
     }
 
     // 途中立ち寄り意図を検出してPlaces APIを呼び出す（matchedSpotsが空でもstopIntentがあれば呼ぶ）
-    // チャット履歴から最初のStopIntentを含むメッセージを探す
-    const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-    const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
-    
+    // stopIntentMessageとstopIntentは660行目で既に定義済み（Eセクションでも使用可能）
     if (stopIntent) {
       // destination座標を取得（integratePlacesで使用）
       let destinationCoords: { lat: number; lng: number } | undefined;
@@ -1341,14 +1396,17 @@ G. その他（自由入力）
       containsZawaoOkama: finalSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
     });
 
+    response.debug = { branch: "before:E_normal_before_plan" };
     return NextResponse.json(response);
   } catch (error: any) {
+    console.error("[koyo-before] ❌ BRANCH: UNHANDLED_ERROR:", error);
     console.error("[koyo-before] error:", error);
     return NextResponse.json(
       {
         error: "旅前AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
         origin: DEFAULT_ORIGIN,
+        debug: { branch: "before:UNHANDLED_ERROR" },
       },
       { status: 500 }
     );
