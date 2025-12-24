@@ -186,7 +186,8 @@ export default function Page() {
           origin: data.routeInfo.origin,
           destination: data.routeInfo.destination,
           spots: data.spots,
-          createdAt: new Date().toISOString(),
+          constraints: {},
+          bCallCount: 0,
         };
         setRoutePlan(newRoutePlan);
       }
