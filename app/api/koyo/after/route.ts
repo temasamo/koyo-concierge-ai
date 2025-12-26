@@ -798,7 +798,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           mode: "after-destination-select",
           reply: `
-お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！
 どちら方面へお帰りになりますか？
 
 ① 宮城
@@ -938,11 +937,12 @@ export async function POST(req: NextRequest) {
             console.log("[koyo-after] Fixed destination set, proceeding with plan generation");
           } else if (isOtherSelected) {
             // F（その他）が選択された場合：県境選択を促す
+            // NOTE: 復旧時は「お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！」の前置きを削除すること
+            // 理由：初回（992行目）で既に説明済みのため、2回目以降は質問のみの方が自然
             console.log("[koyo-after] ✅ BRANCH: B4_other_selected (F選択、県境選択を促す)");
             return NextResponse.json({
               mode: "after-destination-select",
               reply: `
-お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！
 どちら方面へお帰りになりますか？
 
 ① 宮城
@@ -957,6 +957,7 @@ export async function POST(req: NextRequest) {
             });
           } else {
             // A〜F が選択されていない場合：最初の選択肢を提示
+            // NOTE: この分岐は初回質問なので、「お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！」を含める
             console.log("[koyo-after] ✅ BRANCH: B5_destination_ask (destination質問)");
             return NextResponse.json({
               mode: "after-destination-select",

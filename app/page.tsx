@@ -291,6 +291,7 @@ export default function Page() {
 
       // デバッグログ
       console.log("[page.tsx] API response:", data);
+      console.log("[page.tsx] reply from API:", data.reply);
       console.log("[page.tsx] spots:", data.spots);
       console.log("[page.tsx] origin from API:", data.origin);
       console.log("[page.tsx] destination from API:", data.destination);
@@ -580,7 +581,9 @@ export default function Page() {
       }
 
       // ④ AI の返答を追加
-      addMessage(mode, { role: "assistant", content: data.reply });
+      if (data.reply) {
+        addMessage(mode, { role: "assistant", content: data.reply });
+      }
     } catch (error) {
       console.error("Chat API error:", error);
 
