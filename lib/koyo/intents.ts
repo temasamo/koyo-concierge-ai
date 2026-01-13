@@ -71,3 +71,106 @@ export function detectPreCheckinIntent(message: string): boolean {
   return preCheckinKeywords.some((keyword) => normalizedMessage.includes(keyword));
 }
 
+/**
+ * モード相違検出（Phase1.75）
+ * 現在のモードとユーザーの質問内容がズレている場合を検出する
+ * @param message ユーザーのメッセージ
+ * @param currentMode 現在のモード（"before" | "stay" | "after"）
+ * @returns { detected: boolean, reason?: string } 検出結果と理由
+ */
+export function detectModeMismatch(
+  message: string,
+  currentMode: "before" | "stay" | "after"
+): { detected: boolean; reason?: string } {
+  if (!message || typeof message !== "string") {
+    return { detected: false };
+  }
+
+  const normalizedMessage = message.trim().toLowerCase();
+
+  // Beforeモードで検出すべきキーワード（他のモードの内容）
+  const beforeMismatchKeywords = [
+    "宿泊中",
+    "滞在中",
+    "チェックイン後",
+    "帰宅後",
+    "チェックアウト後",
+    "帰り道",
+    "帰宅途中",
+    "明日",
+    "未来",
+    "次の日",
+  ];
+
+  // Stayモードで検出すべきキーワード（他のモードの内容）
+  const stayMismatchKeywords = [
+    "帰宅後",
+    "チェックアウト後",
+    "帰り道",
+    "帰宅途中",
+    "明日",
+    "未来",
+    "次の日",
+    "チェックイン前",
+    "到着前",
+  ];
+
+  // Afterモードで検出すべきキーワード（他のモードの内容）
+  const afterMismatchKeywords = [
+    "明日",
+    "未来",
+    "次の日",
+    "チェックイン前",
+    "到着前",
+    "宿泊中",
+    "滞在中",
+  ];
+
+  let keywords: string[] = [];
+  let reason: string | undefined;
+
+  switch (currentMode) {
+    case "before":
+      keywords = beforeMismatchKeywords;
+      if (keywords.some((k) => normalizedMessage.includes(k))) {
+        // どのキーワードがマッチしたかで理由を決定
+        if (normalizedMessage.includes("宿泊中") || normalizedMessage.includes("滞在中") || normalizedMessage.includes("チェックイン後")) {
+          reason = "before->stay";
+        } else if (normalizedMessage.includes("帰宅後") || normalizedMessage.includes("チェックアウト後") || normalizedMessage.includes("帰り道") || normalizedMessage.includes("帰宅途中")) {
+          reason = "before->after";
+        } else if (normalizedMessage.includes("明日") || normalizedMessage.includes("未来") || normalizedMessage.includes("次の日")) {
+          reason = "before->future";
+        }
+      }
+      break;
+    case "stay":
+      keywords = stayMismatchKeywords;
+      if (keywords.some((k) => normalizedMessage.includes(k))) {
+        if (normalizedMessage.includes("帰宅後") || normalizedMessage.includes("チェックアウト後") || normalizedMessage.includes("帰り道") || normalizedMessage.includes("帰宅途中")) {
+          reason = "stay->after";
+        } else if (normalizedMessage.includes("明日") || normalizedMessage.includes("未来") || normalizedMessage.includes("次の日")) {
+          reason = "stay->future";
+        } else if (normalizedMessage.includes("チェックイン前") || normalizedMessage.includes("到着前")) {
+          reason = "stay->before";
+        }
+      }
+      break;
+    case "after":
+      keywords = afterMismatchKeywords;
+      if (keywords.some((k) => normalizedMessage.includes(k))) {
+        if (normalizedMessage.includes("明日") || normalizedMessage.includes("未来") || normalizedMessage.includes("次の日")) {
+          reason = "after->future";
+        } else if (normalizedMessage.includes("チェックイン前") || normalizedMessage.includes("到着前")) {
+          reason = "after->before";
+        } else if (normalizedMessage.includes("宿泊中") || normalizedMessage.includes("滞在中")) {
+          reason = "after->stay";
+        }
+      }
+      break;
+  }
+
+  const detected = keywords.some((keyword) => normalizedMessage.includes(keyword));
+
+  return { detected, reason };
+}
+

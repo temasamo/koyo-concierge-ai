@@ -15,6 +15,7 @@ import { getPrefBoundary } from "@/store/prefBoundaries";
 import type { OriginInfo } from "@/store/spots";
 import type { StopIntent } from "@/types/route";
 import { parseAfterDestination } from "@/lib/koyo/after/destination";
+import { detectModeMismatch } from "@/lib/koyo/intents";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -113,7 +114,7 @@ NG例：
 
   return `
 あなたは「日本の宿 古窯」の専属AIコンシェルジュです。
-モード：After（帰宅後AI）
+モード：After（チェックアウト後AI）
 人格：48歳前後の落ち着いた若女将。丁寧で温かい接客の言葉遣い。
 役割：チェックアウト後のお見送り、帰宅途中に寄れるスポット案内、負担の少ない提案、安全配慮。
 
@@ -128,8 +129,8 @@ NG例：
 - Supabaseのスポット以外は絶対に出さない（推測生成は厳禁）。
 
 【Afterモードの提案の特徴】
-- 旅前（Before）: 計画作成・長時間移動も許容
-- 旅中（Stay）  : 当日の天候・気分に合わせた柔軟案
+- チェックイン前（Before）: 計画作成・長時間移動も許容
+- 滞在中（Stay）  : 当日の天候・気分に合わせた柔軟案
 - 旅後（After）: "帰り道寄れる・負担のない短時間スポット"が中心
 
 【重要制限（厳守）】
@@ -725,6 +726,17 @@ export async function POST(req: NextRequest) {
       (currentDestination.type === "pref-boundary" ||
         (currentDestination.lat !== null && currentDestination.lng !== null));
 
+    // Phase1.75: モード相違検出
+    const modeMismatch = detectModeMismatch(userMessage, "after");
+    if (modeMismatch.detected) {
+      console.log("[koyo-after] ⚠️ MODE MISMATCH detected:", modeMismatch.reason);
+      return NextResponse.json({
+        reply: "その内容は、今お話ししている流れと少し異なりそうですね。どのタイミングのお話か、確認してもよろしいでしょうか？（チェックイン前／滞在中／チェックアウト後 など）",
+        destination: DEFAULT_DESTINATION,
+        debug: { branch: "after:mode_mismatch", mode_mismatch: true, reason: modeMismatch.reason },
+      });
+    }
+
     // 途中立ち寄り意図を検出（システムプロンプト生成前に検出）
     const stopIntentMessageForPrompt = findStopIntentMessage(userMessages) || userMessage;
     const stopIntentForPrompt = detectStopIntent(stopIntentMessageForPrompt);
@@ -944,7 +956,7 @@ export async function POST(req: NextRequest) {
             console.log("[koyo-after] Fixed destination set, proceeding with plan generation");
           } else if (isOtherSelected) {
             // F（その他）が選択された場合：県境選択を促す
-            // NOTE: 復旧時は「お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！」の前置きを削除すること
+            // NOTE: 復旧時は「観光スポットに立ち寄るプランをお作りしますね！」の前置きを削除すること
             // 理由：初回（992行目）で既に説明済みのため、2回目以降は質問のみの方が自然
             console.log("[koyo-after] ✅ BRANCH: B4_other_selected (F選択、県境選択を促す)");
             return NextResponse.json({
@@ -964,12 +976,12 @@ export async function POST(req: NextRequest) {
             });
           } else {
             // A〜F が選択されていない場合：最初の選択肢を提示
-            // NOTE: この分岐は初回質問なので、「お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！」を含める
+            // NOTE: この分岐は初回質問なので、「観光スポットに立ち寄るプランをお作りしますね！」を含める
             console.log("[koyo-after] ✅ BRANCH: B5_destination_ask (destination質問)");
             return NextResponse.json({
               mode: "after-destination-select",
               reply: `
-お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！
+観光スポットに立ち寄るプランをお作りしますね！
 まず、どちら方面へお帰りになりますか？
 
 A. 山形駅
@@ -997,7 +1009,7 @@ F. その他
         return NextResponse.json({
           mode: "after-destination-select",
           reply: `
-お帰りの途中で観光スポットに立ち寄るプランをお作りしますね！
+観光スポットに立ち寄るプランをお作りしますね！
 まず、どちら方面へお帰りになりますか？
 
 A. 山形駅
@@ -1293,7 +1305,7 @@ F. その他
     console.error("[koyo-after] error:", error);
     return NextResponse.json(
       {
-        error: "帰宅後AIの応答生成中にエラーが発生しました。",
+        error: "チェックアウト後AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
         debug: { branch: "after:UNHANDLED_ERROR" },
       },

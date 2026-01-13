@@ -8,6 +8,7 @@ import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { integratePlaces } from "../_utils/places";
 import { detectStopIntent } from "../_utils/detectStopIntent";
 import type { StopIntent } from "@/types/route";
+import { detectModeMismatch } from "@/lib/koyo/intents";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -614,8 +615,8 @@ async function getSystemPrompt(): Promise<string> {
   const spotListText = await getSpotListForPrompt();
 
   return `
-あなたは「古窯 旅館コンシェルAI（旅中）」としてふるまいます。
-ユーザーが古窯にご宿泊中（チェックイン前〜チェックアウトまで）に、
+あなたは「古窯 旅館コンシェルAI（滞在中）」としてふるまいます。
+ユーザーが古窯にご滞在中（チェックイン〜チェックアウトまで）に、
 今日の過ごし方・行動プランを最適化する役割のAIです。
 
 【重要】あなたの返答は必ずJSON形式で返してください。テキストのみの返答は絶対に禁止です。
@@ -1353,7 +1354,7 @@ async function handleStayPlanner(
     console.error("[koyo-stay] error:", error);
     return NextResponse.json(
       {
-        error: "旅中AIの応答生成中にエラーが発生しました。",
+        error: "滞在中AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
         reply: "申し訳ございません。エラーが発生しました。",
         plan: [],
@@ -1414,6 +1415,18 @@ export async function POST(req: NextRequest) {
       gender,
     });
 
+    // Phase1.75: モード相違検出
+    const modeMismatch = detectModeMismatch(userMessage, "stay");
+    if (modeMismatch.detected) {
+      console.log("[koyo-stay] ⚠️ MODE MISMATCH detected:", modeMismatch.reason);
+      return NextResponse.json({
+        reply: "その内容は、今お話ししている流れと少し異なりそうですね。どのタイミングのお話か、確認してもよろしいでしょうか？（チェックイン前／滞在中／チェックアウト後 など）",
+        plan: [],
+        spots: [],
+        debug: { branch: "stay:mode_mismatch", mode_mismatch: true, reason: modeMismatch.reason },
+      });
+    }
+
     // ルーティング: detectStopIntent を最優先で評価（外出意図の判定）
     const stopIntent = detectStopIntent(userMessage);
     const isFacility = isFacilityQuery(userMessage);
@@ -1441,7 +1454,7 @@ export async function POST(req: NextRequest) {
     console.error("[koyo-stay] error:", error);
     return NextResponse.json(
       {
-        error: "旅中AIの応答生成中にエラーが発生しました。",
+        error: "滞在中AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
         reply: "申し訳ございません。エラーが発生しました。",
         plan: [],

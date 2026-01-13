@@ -30,7 +30,7 @@ export default function ChatContainer({
             mode === "before" ? "bg-blue-600 text-white" : "bg-gray-200"
           }`}
         >
-          旅行前
+          チェックイン前
         </button>
         <button
           onClick={() => setMode("stay")}
@@ -38,7 +38,7 @@ export default function ChatContainer({
             mode === "stay" ? "bg-blue-600 text-white" : "bg-gray-200"
           }`}
         >
-          宿泊中
+          滞在中
         </button>
         <button
           onClick={() => setMode("after")}
@@ -46,7 +46,7 @@ export default function ChatContainer({
             mode === "after" ? "bg-blue-600 text-white" : "bg-gray-200"
           }`}
         >
-          帰宅後
+          チェックアウト後
         </button>
       </div>
 

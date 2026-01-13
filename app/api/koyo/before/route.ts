@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { matchSpot } from "../_utils/matchSpot";
-import { detectPreCheckinIntent } from "@/lib/koyo/intents";
+import { detectPreCheckinIntent, detectModeMismatch } from "@/lib/koyo/intents";
 import { parseOriginSelection, type Origin } from "@/lib/koyo/precheckin/origins";
 import { normalizeUserSelection } from "@/lib/koyo/text/normalizeUserSelection";
 import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckinPlan";
@@ -93,8 +93,8 @@ async function getSystemPrompt(): Promise<string> {
   const spotListText = await getSpotListForPrompt();
 
   return `
-あなたは「古窯 旅館コンシェルAI（旅前）」です。
-「旅前（Before）モード」とは、旅行全体の計画を立てるためのモードであり、
+あなたは「古窯 旅館コンシェルAI（チェックイン前）」です。
+「チェックイン前（Before）モード」とは、旅行全体の計画を立てるためのモードであり、
 ユーザーがチェックイン前・チェックイン後・チェックアウト後のいずれのタイミングで利用しても問題ありません。
 実際の時系列にかかわらず、常に「旅行全体の計画」を立てられるモードとして振る舞ってください。
 お客様に最適な観光プランを丁寧にご案内する若女将AIとしてふるまいます。
@@ -670,6 +670,17 @@ export async function POST(req: NextRequest) {
     console.log("[koyo-before] ORIGIN FINAL:", currentOrigin);
     console.log("[koyo-before] hasOrigin =", hasOrigin);
 
+    // Phase1.75: モード相違検出
+    const modeMismatch = detectModeMismatch(userMessage, "before");
+    if (modeMismatch.detected) {
+      console.log("[koyo-before] ⚠️ MODE MISMATCH detected:", modeMismatch.reason);
+      return NextResponse.json({
+        reply: "その内容は、今お話ししている流れと少し異なりそうですね。どのタイミングのお話か、確認してもよろしいでしょうか？（チェックイン前／滞在中／チェックアウト後 など）",
+        origin: DEFAULT_ORIGIN,
+        debug: { branch: "before:mode_mismatch", mode_mismatch: true, reason: modeMismatch.reason },
+      });
+    }
+
     const isPreCheckinIntent = detectPreCheckinIntent(userMessage);
     // ユーザー選択入力を正規化してからパース
     const userMessageNormalized = normalizeUserSelection(userMessage);
@@ -823,7 +834,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         mode: "precheckin-origin-select",
         reply: `
-チェックイン前の観光プランをお作りしますね！
+観光プランをお作りしますね！
 まず、出発地を教えてください。
 
 A. 山形駅
@@ -1124,7 +1135,7 @@ G. その他（自由入力）
       return NextResponse.json({
         mode: "precheckin-origin-select",
         reply: `
-チェックイン前の観光プランをお作りしますね！
+観光プランをお作りしますね！
 まず、出発地を教えてください。
 
 A. 山形駅
@@ -1403,7 +1414,7 @@ G. その他（自由入力）
     console.error("[koyo-before] error:", error);
     return NextResponse.json(
       {
-        error: "旅前AIの応答生成中にエラーが発生しました。",
+        error: "チェックイン前AIの応答生成中にエラーが発生しました。",
         detail: error?.message ?? String(error),
         origin: DEFAULT_ORIGIN,
         debug: { branch: "before:UNHANDLED_ERROR" },

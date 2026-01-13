@@ -328,3 +328,5 @@ const completion = await openai.chat.completions.create({
 
 **重要:** `onsen`は`outdoorContextKeywords`（"プラン", "途中", "立ち寄り"など）が含まれている場合のみ検出される。
 
+
+
