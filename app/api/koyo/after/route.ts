@@ -1171,6 +1171,46 @@ F. その他
       cleanReply = sanitizeReplyForFailedPlaces(cleanReply, stopIntent);
     }
 
+    // Phase2-1: reply文を「確定 → 候補」の2段構造にする
+    // destination名を取得（finalDestination.name または currentDestination.name）
+    let destinationName = "目的地";
+    if (hasDestination && currentDestination && currentDestination.name) {
+      destinationName = currentDestination.name;
+    } else if (finalDestination && finalDestination.name) {
+      destinationName = finalDestination.name;
+    } else if (finalDestination && finalDestination.type === "pref-boundary" && finalDestination.pref) {
+      // pref-boundary の場合、県名から生成
+      const prefNameMap: Record<PrefectureKey, string> = {
+        miyagi: "宮城",
+        fukushima: "福島",
+        akita: "秋田",
+        niigata: "新潟",
+      };
+      const prefName = prefNameMap[finalDestination.pref];
+      destinationName = prefName ? `${prefName}方面` : "目的地";
+    }
+
+    // optionalSpots から最大3件を抽出（reply用）
+    const optionalSpotsForReply = matchedSpots && matchedSpots.length > 0
+      ? matchedSpots.slice(0, 3)
+      : [];
+
+    // reply冒頭に「確定ルート」「候補」の説明を追加
+    if (optionalSpotsForReply.length > 0) {
+      const spotNames = optionalSpotsForReply.map((s: any) => s.name).join("、");
+      let candidateText = "";
+      if (optionalSpotsForReply.length === 1) {
+        candidateText = `候補は${spotNames}です。`;
+      } else if (optionalSpotsForReply.length === 2) {
+        candidateText = `候補は${spotNames}の2つです。`;
+      } else {
+        candidateText = `候補は${spotNames}の${optionalSpotsForReply.length}つです。`;
+      }
+      cleanReply = `まず、古窯から${destinationName}への帰路（確定ルート）を作りました。途中で立ち寄れそうな${candidateText}\n\n${cleanReply}`;
+    } else {
+      cleanReply = `まず、古窯から${destinationName}への帰路（確定ルート）を作りました。\n\n${cleanReply}`;
+    }
+
     // レスポンスを構築
     const response: any = {
       reply: cleanReply,
@@ -1182,9 +1222,18 @@ F. その他
       response.plan = finalPlan;
     }
 
-    // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
+    // Phase2-1: data.spots は optionalSpots（候補）のみに固定
+    // confirmedSpots（古窯/目的地）は routeInfo.origin/destination で持つため、spots には含めない
     if (matchedSpots && matchedSpots.length > 0) {
-      response.spots = matchedSpots;
+      response.spots = matchedSpots; // optionalSpots のみ
+    }
+
+    // Phase2-1: optionalSpots を追加（matchedSpots をそのまま、spotRole: "optional" を付与）
+    if (matchedSpots && matchedSpots.length > 0) {
+      response.optionalSpots = matchedSpots.map((spot: any) => ({
+        ...spot,
+        spotRole: "optional" as const,
+      }));
     }
 
     // routeInfo を構築（Afterモード：originは古窯固定、destinationは県境または古窯）
@@ -1227,45 +1276,11 @@ F. その他
       console.log("[koyo-after] Using default Koyo destination");
     }
 
-    const waypoints =
-      matchedSpots && Array.isArray(matchedSpots)
-        ? matchedSpots
-            .filter((s: any) => {
-              // 座標の型と値の検証を強化
-              const isValid = 
-                s.lat != null && 
-                s.lng != null &&
-                typeof s.lat === "number" &&
-                typeof s.lng === "number" &&
-                !isNaN(s.lat) &&
-                !isNaN(s.lng) &&
-                s.lat >= -90 && s.lat <= 90 &&
-                s.lng >= -180 && s.lng <= 180;
-              
-              if (!isValid) {
-                console.warn(`[koyo-after] Invalid coordinates for spot "${s.name}" (${s.id}): lat=${s.lat}, lng=${s.lng}`);
-              }
-              
-              return isValid;
-            })
-            .map((s: any) => {
-              // 座標を数値型に明示的に変換
-              const lat = Number(s.lat);
-              const lng = Number(s.lng);
-              
-              // 蔵王お釜のIDをチェック（デバッグ用）
-              const zawaoOkamaId = "b916a6f4-7225-42df-800a-a48f5f030da0";
-              if (s.id === zawaoOkamaId) {
-                console.log(`[koyo-after] Zawao Okama waypoint: lat=${lat}, lng=${lng}, type: lat=${typeof lat}, lng=${typeof lng}`);
-              }
-              
-              return { lat, lng };
-            })
-        : [];
-
+    // Phase2-1: waypoints を空配列に固定（matchedSpots は候補として扱い、ルートに含めない）
+    // 既存の matchedSpots → waypoints 変換処理（1230-1264行目付近）は Phase2-1 では使用しない
     response.routeInfo = {
       origin: KOYO_COORDINATES,
-      waypoints,
+      waypoints: [], // Phase2-1: optionalは含めない
       destination: routeDestination,
     };
 
@@ -1288,6 +1303,47 @@ F. その他
     } else {
       console.log("[koyo-after] No destination to return");
     }
+
+    // Phase2-1: confirmedSpots を追加（古窯 + destination）
+    const confirmedSpots: any[] = [
+      {
+        id: "koyo",
+        name: "日本の宿 古窯",
+        lat: KOYO_COORDINATES.lat,
+        lng: KOYO_COORDINATES.lng,
+        source: "virtual",
+        spotRole: "confirmed" as const,
+      },
+    ];
+
+    // destination の名前を取得（finalDestination.name または currentDestination.name）
+    let confirmedDestinationName = "目的地";
+    if (hasDestination && currentDestination && currentDestination.name) {
+      confirmedDestinationName = currentDestination.name;
+    } else if (finalDestination && finalDestination.name) {
+      confirmedDestinationName = finalDestination.name;
+    } else if (finalDestination && finalDestination.type === "pref-boundary" && finalDestination.pref) {
+      // pref-boundary の場合、県名から生成
+      const prefNameMap: Record<PrefectureKey, string> = {
+        miyagi: "宮城",
+        fukushima: "福島",
+        akita: "秋田",
+        niigata: "新潟",
+      };
+      const prefName = prefNameMap[finalDestination.pref];
+      confirmedDestinationName = prefName ? `${prefName}方面` : "目的地";
+    }
+
+    confirmedSpots.push({
+      id: "destination",
+      name: confirmedDestinationName,
+      lat: routeDestination.lat,
+      lng: routeDestination.lng,
+      source: "virtual",
+      spotRole: "confirmed" as const,
+    });
+
+    response.confirmedSpots = confirmedSpots;
     
     // デバッグログ：routeInfoの内容を確認
     console.log("[koyo-after] routeInfo constructed:", {
@@ -1295,7 +1351,8 @@ F. その他
       destination: response.routeInfo.destination,
       waypointsCount: response.routeInfo.waypoints.length,
       waypoints: response.routeInfo.waypoints,
-      containsZawaoOkama: matchedSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
+      confirmedSpotsCount: response.confirmedSpots.length,
+      optionalSpotsCount: response.optionalSpots?.length || 0,
     });
 
     response.debug = { branch: "after:A_plan_generation" };

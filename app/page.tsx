@@ -197,7 +197,8 @@ export default function Page() {
         addMessage(mode, { role: "assistant", content: data.reply });
       }
       
-      // スポットを設定
+      // Phase2-1: Afterモードでは data.spots（= optionalSpots）のみを使用
+      // confirmedSpots は routeInfo.origin/destination で持つため、setSpots には入れない
       if (data.spots && Array.isArray(data.spots)) {
         setSpots(data.spots);
       }
@@ -296,6 +297,7 @@ export default function Page() {
       console.log("[page.tsx] origin from API:", data.origin);
       console.log("[page.tsx] destination from API:", data.destination);
       console.log("[page.tsx] routeInfo:", data.routeInfo);
+      console.log("[page.tsx] routeInfo.waypoints:", data.routeInfo?.waypoints);
       console.log("[page.tsx] routePlan from API:", data.routePlan);
       console.log("[page.tsx] current origin in store:", origin);
       console.log("[page.tsx] current destination in store:", destination);
@@ -467,7 +469,8 @@ export default function Page() {
       // そのまま useSpotStore.setSpots() に渡す。
       // ============================================================
       
-      // AIからスポット配列を受け取る（Supabase形式を前提）
+      // Phase2-1: Afterモードでは data.spots（= optionalSpots）のみを使用
+      // confirmedSpots は routeInfo.origin/destination で持つため、setSpots には入れない
       if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
         // ============================================================
         // 形式の揺れチェック（Task 5: page.tsx側の修正）

@@ -24,6 +24,8 @@ export type Spot = {
   imageUrl?: string;
   rating?: number;
   stayMinutes?: number;
+  // Phase2-1: スポットの役割（確定/候補）
+  spotRole?: "confirmed" | "optional";
 };
 
 export type OriginInfo = {
@@ -90,17 +92,11 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   routePlan: null,
   setRoutePlan: (routePlan) => {
     set({ routePlan });
-    // RoutePlanが設定されたら、既存フィールドにも同期（後方互換性）
+    // RoutePlanが設定されたら、spotsのみを更新（routeInfoはsetRouteInfoで管理）
     if (routePlan) {
       set({
         spots: routePlan.spots as Spot[],
-        routeInfo: {
-          origin: routePlan.origin,
-          waypoints: routePlan.spots
-            .filter((s) => s.lat != null && s.lng != null)
-            .map((s) => ({ lat: s.lat!, lng: s.lng! })),
-          destination: routePlan.destination,
-        },
+        // routeInfo は setRouteInfo(data.routeInfo) で更新する（Phase2-1: 候補と確定の分離）
       });
     }
   },
