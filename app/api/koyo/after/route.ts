@@ -1172,13 +1172,11 @@ F. その他
     }
 
     // Phase2-1: reply文を「確定 → 候補」の2段構造にする
-    // destination名を取得（finalDestination.name または currentDestination.name）
+    // destination名を取得（currentDestination.name または aiDestination.name）
     let destinationName = "目的地";
     if (hasDestination && currentDestination && currentDestination.name) {
       destinationName = currentDestination.name;
-    } else if (finalDestination && finalDestination.name) {
-      destinationName = finalDestination.name;
-    } else if (finalDestination && finalDestination.type === "pref-boundary" && finalDestination.pref) {
+    } else if (currentDestination && currentDestination.type === "pref-boundary" && currentDestination.pref) {
       // pref-boundary の場合、県名から生成
       const prefNameMap: Record<PrefectureKey, string> = {
         miyagi: "宮城",
@@ -1186,7 +1184,19 @@ F. その他
         akita: "秋田",
         niigata: "新潟",
       };
-      const prefName = prefNameMap[finalDestination.pref];
+      const prefName = prefNameMap[currentDestination.pref];
+      destinationName = prefName ? `${prefName}方面` : "目的地";
+    } else if (aiDestination && aiDestination.name) {
+      destinationName = aiDestination.name;
+    } else if (aiDestination && aiDestination.type === "pref-boundary" && aiDestination.pref) {
+      // pref-boundary の場合、県名から生成
+      const prefNameMap: Record<PrefectureKey, string> = {
+        miyagi: "宮城",
+        fukushima: "福島",
+        akita: "秋田",
+        niigata: "新潟",
+      };
+      const prefName = prefNameMap[aiDestination.pref];
       destinationName = prefName ? `${prefName}方面` : "目的地";
     }
 
