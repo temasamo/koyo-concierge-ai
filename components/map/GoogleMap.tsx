@@ -710,7 +710,15 @@ export default function GoogleMap({
         let spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
         // 見つからない場合は routePlan.spots から検索（setRoutePlan の更新タイミングを考慮）
         if (!spot && currentRoutePlan?.spots) {
-          spot = currentRoutePlan.spots.find((s) => s.id === wp.spotId) ?? null;
+          const planSpot = currentRoutePlan.spots.find((s) => s.id === wp.spotId);
+          // lat/lngがnullでない場合のみ有効なspotとして扱う
+          if (planSpot && planSpot.lat != null && planSpot.lng != null) {
+            // RoutePlan.spotsの型をSpot型に変換（stayMinutesのnullをundefinedに変換）
+            spot = {
+              ...planSpot,
+              stayMinutes: planSpot.stayMinutes ?? undefined,
+            } as Spot & { lat: number; lng: number };
+          }
         }
         // missログ
         if (!spot) {
@@ -1182,7 +1190,14 @@ export default function GoogleMap({
         // 見つからない場合は routePlan.spots から検索（setRoutePlan の更新タイミングを考慮）
         if (!spot) {
           const currentRoutePlan = useSpotStore.getState().routePlan;
-          spot = currentRoutePlan?.spots?.find((s) => s.id === point.spotId) ?? undefined;
+          const planSpot = currentRoutePlan?.spots?.find((s) => s.id === point.spotId);
+          if (planSpot) {
+            // RoutePlan.spotsの型をSpot型に変換（stayMinutesのnullをundefinedに変換）
+            spot = {
+              ...planSpot,
+              stayMinutes: planSpot.stayMinutes ?? undefined,
+            } as Spot;
+          }
         }
         if (spot) {
         const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
