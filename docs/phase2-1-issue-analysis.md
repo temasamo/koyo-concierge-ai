@@ -140,3 +140,6 @@ routeWaypoints = validSpots.map((s) => ({
 **追加修正:**
 - `confirmedSpots`の`id`が`"koyo"`と`"destination"`の場合、waypointsから除外する処理を追加
 
+
+
+

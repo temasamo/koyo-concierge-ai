@@ -142,3 +142,6 @@ if (routeInfo && routeInfo.origin && !hasPrefBoundary && !hasFixedOrigin && !has
 - `routeInfo.waypoints`が空配列の場合、`routeInfo.waypoints.map()`は空配列を返すことを確認
 - `validSpots`からwaypointsを生成している箇所をすべて特定し、`routeInfo.waypoints`を優先するように修正
 
+
+
+

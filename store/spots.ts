@@ -69,6 +69,10 @@ type SpotStore = {
   originInputMode: "free" | "current_location" | undefined;
   setOriginInputMode: (mode: "free" | "current_location" | undefined) => void;
   clearOriginInputMode: () => void;
+  // Phase2-2: 候補スポット（確定経由地ではない）
+  optionalSpots: Spot[];
+  setOptionalSpots: (spots: Spot[]) => void;
+  clearOptionalSpots: () => void;
 };
 
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -131,5 +135,9 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   originInputMode: undefined,
   setOriginInputMode: (mode) => set({ originInputMode: mode }),
   clearOriginInputMode: () => set({ originInputMode: undefined }),
+  // Phase2-2: 候補スポット管理
+  optionalSpots: [],
+  setOptionalSpots: (optionalSpots) => set({ optionalSpots }),
+  clearOptionalSpots: () => set({ optionalSpots: [] }),
 }));
 

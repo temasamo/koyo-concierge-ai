@@ -12,7 +12,7 @@ import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
 import { normalizeUserSelection } from "@/lib/koyo/text/normalizeUserSelection";
 import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
 import { getPrefBoundary } from "@/store/prefBoundaries";
-import type { OriginInfo } from "@/store/spots";
+import type { OriginInfo, Spot } from "@/store/spots";
 import type { StopIntent } from "@/types/route";
 import { parseAfterDestination } from "@/lib/koyo/after/destination";
 import { detectModeMismatch } from "@/lib/koyo/intents";
@@ -667,9 +667,19 @@ function cleanReplyMessage(reply: string): string {
  * - messages: chat履歴（フロントが管理）
  * - query: 単発問い合わせ
  */
+// Phase2-2: After状態を保持するためのコンテキスト
+type AfterContext = {
+  phase?: "after:phase2_1" | "after:phase2_2_waiting_selection" | "after:phase2_2_done";
+  optionalSpots?: Spot[]; // Phase2-1で保持した候補
+  spots?: Spot[]; // Phase2-2で確定した経由地（順番変更用）
+  routeInfoKey?: "direct"; // 直行ルートを意味するフラグ
+  origin?: { lat: number; lng: number };
+  destination?: { lat: number; lng: number };
+};
+
 type AfterRequestBody =
-  | { messages: ChatCompletionMessageParam[]; userState?: { destination?: OriginInfo } }
-  | { query: string; userState?: { destination?: OriginInfo } };
+  | { messages: ChatCompletionMessageParam[]; userState?: { destination?: OriginInfo; context?: { after?: AfterContext } } }
+  | { query: string; userState?: { destination?: OriginInfo; context?: { after?: AfterContext } } };
 
 // デフォルトの destination 値
 const DEFAULT_DESTINATION: OriginInfo = {
@@ -679,6 +689,17 @@ const DEFAULT_DESTINATION: OriginInfo = {
   lng: null,
   name: null,
 };
+
+/**
+ * Phase2-2: ユーザー入力から番号を抽出する関数
+ * 対応例：1, 1,3, 1と3, 1 3, 1と 3
+ * まずは半角数字のみ対応
+ */
+function extractSelections(text: string): number[] {
+  const nums = text.match(/\d+/g)?.map(n => parseInt(n, 10)) ?? [];
+  // 重複排除 & 0以上（0も含める）
+  return Array.from(new Set(nums)).filter(n => n >= 0);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -735,6 +756,287 @@ export async function POST(req: NextRequest) {
         destination: DEFAULT_DESTINATION,
         debug: { branch: "after:mode_mismatch", mode_mismatch: true, reason: modeMismatch.reason },
       });
+    }
+
+    // Phase2-2: 候補選択処理（context.after が存在する場合）
+    const afterContext = userState.context?.after;
+    
+    // 「順番を逆に」の処理（確定済み経由地の順番変更）
+    // 条件: phaseが"after:phase2_2_done"またはspotsが存在する場合
+    if (afterContext && (afterContext.phase === "after:phase2_2_done" || (afterContext.spots && Array.isArray(afterContext.spots) && afterContext.spots.length > 0))) {
+      const normalizedMessage = userMessage.trim().toLowerCase();
+      const isReverseOrder = normalizedMessage.includes("順番を逆に") || normalizedMessage.includes("順番逆") || normalizedMessage.includes("逆順");
+      
+      console.log("[koyo-after] Phase2-2: Reverse order check:", {
+        phase: afterContext.phase,
+        spotsCount: afterContext.spots?.length || 0,
+        isReverseOrder,
+        normalizedMessage,
+        hasSpots: !!afterContext.spots,
+      });
+      
+      if (isReverseOrder && afterContext.spots && Array.isArray(afterContext.spots) && afterContext.spots.length > 0) {
+        const currentSpots = afterContext.spots;
+        if (currentSpots.length >= 2) {
+          // 経由地の順番を逆にする
+          const reversedSpots = [...currentSpots].reverse();
+          const reversedWaypoints = reversedSpots.map(s => ({
+            lat: s.lat!,
+            lng: s.lng!,
+          }));
+          
+          // routeInfo を構築
+          let routeOrigin: { lat: number; lng: number } = afterContext.origin || { ...KOYO_COORDINATES };
+          let routeDestination: { lat: number; lng: number } = afterContext.destination || { ...KOYO_COORDINATES };
+          
+          if (hasDestination && currentDestination) {
+            if (currentDestination.type === "pref-boundary" && currentDestination.pref) {
+              const prefBoundary = getPrefBoundary(currentDestination.pref);
+              if (prefBoundary) {
+                routeDestination = prefBoundary;
+              }
+            } else if (currentDestination.lat && currentDestination.lng) {
+              routeDestination = {
+                lat: currentDestination.lat,
+                lng: currentDestination.lng,
+              };
+            }
+          }
+          
+          const reversedSpotList = reversedSpots
+            .map((s, idx) => {
+              // optionalSpotsから元のインデックスを取得
+              const originalIndex = afterContext.optionalSpots?.findIndex(opt => opt.id === s.id) ?? idx;
+              const displayNumber = originalIndex !== -1 ? originalIndex + 1 : idx + 1;
+              return `(${displayNumber}) ${s.name}`;
+            })
+            .join("、");
+          
+          // routePlan を構築（setRoutePlan用）
+          const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const routePlan = {
+            planId,
+            mode: "AFTER" as const,
+            origin: routeOrigin,
+            destination: routeDestination,
+            spots: reversedSpots,
+            constraints: {},
+            bCallCount: 0,
+          };
+          
+          return NextResponse.json({
+            reply: `了解です。順番を逆にして、${reversedSpotList}の順でルートを更新しました。`,
+            phase: "after:phase2_2_done",
+            spots: reversedSpots, // 順番を逆にした経由地
+            optionalSpots: afterContext.optionalSpots || [], // 候補は残す
+            routeInfo: {
+              origin: routeOrigin,
+              waypoints: reversedWaypoints,
+              destination: routeDestination,
+            },
+            routePlan, // routePlanも更新
+            destination: hasDestination ? currentDestination : undefined,
+            debug: { branch: "after:phase2_2_reverse_order", phase: "after:phase2_2_done" },
+          });
+        } else {
+          return NextResponse.json({
+            reply: "経由地が1件のため、順番を変更できません。",
+            destination: hasDestination ? currentDestination : undefined,
+            optionalSpots: afterContext.optionalSpots || [],
+            debug: { branch: "after:phase2_2_reverse_order_error" },
+          });
+        }
+      }
+    }
+    
+    // 候補選択処理（optionalSpots が存在する場合）
+    if (afterContext?.optionalSpots && Array.isArray(afterContext.optionalSpots) && afterContext.optionalSpots.length > 0) {
+      console.log("[koyo-after] Phase2-2: Processing selection from optionalSpots:", afterContext.optionalSpots.length);
+      
+      const optionalSpots = afterContext.optionalSpots;
+      const selections = extractSelections(userMessage);
+      
+      console.log("[koyo-after] Phase2-2: Extracted selections:", selections, "from message:", userMessage);
+      
+      // 「0（寄らない）」の処理を最初にチェック
+      if (selections.length === 1 && selections[0] === 0) {
+        // 「0（寄らない）」が選択された場合
+        // 直行ルートのrouteInfoを生成（Phase2-1と同じ形式）
+        if (afterContext.routeInfoKey === "direct" && afterContext.origin && afterContext.destination) {
+          // 直行ルートのrouteInfoを生成（Phase2-1と同じ形式）
+          // 注意: Directions APIはフロント側で呼ばれるため、API側は{ origin, waypoints, destination }のみ返す
+          // フロント側がDirections APIを呼んで完全形（distance/duration/legs/polyline等）を生成する
+          const directRouteInfo = {
+            origin: afterContext.origin,
+            waypoints: [], // 空配列（直行ルート）
+            destination: afterContext.destination,
+          };
+          
+          console.log("[koyo-after] Phase2-2: Processing '0' selection (no waypoints)");
+          
+          return NextResponse.json({
+            reply: `了解です。直行ルートのまま進めます。何かご不明な点がございましたら、お気軽にお尋ねください。`,
+            phase: "after:phase2_2_done",
+            spots: [], // 経由地なし
+            optionalSpots: optionalSpots, // 候補は残す
+            routeInfo: directRouteInfo, // Phase2-1と同じ形式（フロント側がDirections APIで完全形を生成）
+            destination: hasDestination ? currentDestination : undefined,
+            debug: { branch: "after:phase2_2_done_no_waypoints", phase: "after:phase2_2_done" },
+          });
+        } else {
+          // routeInfoKeyまたは座標がない場合はエラー（通常は発生しない）
+          console.warn("[koyo-after] Phase2-2: routeInfoKey or coordinates not found in afterContext", {
+            routeInfoKey: afterContext.routeInfoKey,
+            hasOrigin: !!afterContext.origin,
+            hasDestination: !!afterContext.destination,
+          });
+          return NextResponse.json({
+            reply: "システムエラーが発生しました。もう一度お試しください。",
+            destination: hasDestination ? currentDestination : undefined,
+            optionalSpots: optionalSpots,
+            debug: { branch: "after:phase2_2_error_no_routeinfo" },
+          });
+        }
+      }
+      
+      if (selections.length === 0) {
+        // 選択が0件なら「1〜Nの番号で選んでください」返信
+        const numberedList = optionalSpots
+          .map((s, idx) => {
+            const category = s.category || "観光スポット";
+            return `(${idx + 1}) ${s.name}（${category}）`;
+          })
+          .join("\n");
+        
+        return NextResponse.json({
+          reply: `候補から選んでください。以下の番号でお知らせください。
+
+${numberedList}
+
+この中から、経由地として組み込みたい番号を送ってください。
+例：1 / 2 / 1と2
+※「寄らない」場合は 0 と送ってください。`,
+          destination: hasDestination ? currentDestination : undefined,
+          optionalSpots: optionalSpots,
+          debug: { branch: "after:phase2_2_waiting_selection", phase: "after:phase2_2_waiting_selection" },
+        });
+      }
+      
+      // 選択されたSpotを取得（1-index）
+      const selectedSpots = selections
+        .map(i => optionalSpots[i - 1])
+        .filter(Boolean)
+        .filter((spot): spot is Spot => spot !== undefined && spot.lat !== null && spot.lng !== null);
+      
+      console.log("[koyo-after] Phase2-2: Selected spots:", selectedSpots.map(s => s.name));
+      
+      if (selectedSpots.length === 0) {
+        // 有効な選択が0件の場合
+        const numberedList = optionalSpots
+          .map((s, idx) => {
+            const category = s.category || "観光スポット";
+            return `(${idx + 1}) ${s.name}（${category}）`;
+          })
+          .join("\n");
+        
+        return NextResponse.json({
+          reply: `選択された番号に対応する候補が見つかりませんでした。以下の番号で選んでください。
+
+${numberedList}
+
+この中から、経由地として組み込みたい番号を送ってください。
+例：1 / 2 / 1と2
+※「寄らない」場合は 0 と送ってください。`,
+          destination: hasDestination ? currentDestination : undefined,
+          optionalSpots: optionalSpots,
+          debug: { branch: "after:phase2_2_waiting_selection", phase: "after:phase2_2_waiting_selection" },
+        });
+      }
+      
+      // routeInfo.waypoints を生成（唯一の経路）
+      const waypoints = selectedSpots.map(s => ({
+        lat: s.lat!,
+        lng: s.lng!,
+      }));
+      
+      // routeInfo を構築（origin/destination は既存の値を使用）
+      let routeOrigin: { lat: number; lng: number } = { ...KOYO_COORDINATES };
+      let routeDestination: { lat: number; lng: number } = { ...KOYO_COORDINATES };
+      
+      // destination の座標を取得
+      if (hasDestination && currentDestination) {
+        if (currentDestination.type === "pref-boundary" && currentDestination.pref) {
+          // pref-boundary の場合は境界座標を取得
+          const prefBoundary = getPrefBoundary(currentDestination.pref);
+          if (prefBoundary) {
+            routeDestination = prefBoundary;
+          }
+        } else if (currentDestination.lat && currentDestination.lng) {
+          routeDestination = {
+            lat: currentDestination.lat,
+            lng: currentDestination.lng,
+          };
+        }
+      }
+      
+      // destination が未確定の場合はエラー
+      if (!hasDestination) {
+        return NextResponse.json({
+          reply: "目的地が確定していないため、経由地を選択できません。まず目的地を確定してください。",
+          destination: DEFAULT_DESTINATION,
+          optionalSpots: optionalSpots,
+          debug: { branch: "after:phase2_2_error_no_destination" },
+        });
+      }
+      
+      // レスポンスを構築
+      // 選択されたスポットを番号付きで表示（選択された順序で）
+      const selectedSpotList = selectedSpots
+        .map((s, idx) => {
+          // optionalSpotsから元のインデックスを取得
+          const originalIndex = optionalSpots.findIndex(opt => opt.id === s.id);
+          const displayNumber = originalIndex !== -1 ? originalIndex + 1 : idx + 1;
+          return `(${displayNumber}) ${s.name}`;
+        })
+        .join("、");
+      
+      const response: any = {
+        reply: `了解です。${selectedSpotList}を経由地として組み込み、ルートを更新しました。
+
+この順番で問題なければこのまま進めます。入れ替えたい場合は「順番を逆に」などと送ってください。`,
+        phase: "after:phase2_2_done",
+        spots: selectedSpots, // 確定経由地のみ
+        optionalSpots: optionalSpots, // 候補は残す
+        routeInfo: {
+          origin: routeOrigin,
+          waypoints: waypoints,
+          destination: routeDestination,
+        },
+        destination: hasDestination ? currentDestination : undefined,
+        debug: { branch: "after:phase2_2_done", phase: "after:phase2_2_done" },
+      };
+      
+      // routePlan を構築（setRoutePlan用）
+      if (hasDestination && currentDestination) {
+        const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        response.routePlan = {
+          planId,
+          mode: "AFTER",
+          origin: routeOrigin,
+          destination: routeDestination,
+          spots: selectedSpots,
+          constraints: {},
+          bCallCount: 0,
+        };
+      }
+      
+      console.log("[koyo-after] Phase2-2: Response constructed:", {
+        selectedSpotsCount: selectedSpots.length,
+        waypointsCount: waypoints.length,
+        optionalSpotsCount: optionalSpots.length,
+      });
+      
+      return NextResponse.json(response);
     }
 
     // 途中立ち寄り意図を検出（システムプロンプト生成前に検出）
@@ -1205,20 +1507,34 @@ F. その他
       ? matchedSpots.slice(0, 3)
       : [];
 
-    // reply冒頭に「確定ルート」「候補」の説明を追加
+    // Phase2-1: reply冒頭に「確定ルート」「候補」の説明を追加（${cleanReply}は削除、短い補足のみ）
     if (optionalSpotsForReply.length > 0) {
-      const spotNames = optionalSpotsForReply.map((s: any) => s.name).join("、");
-      let candidateText = "";
-      if (optionalSpotsForReply.length === 1) {
-        candidateText = `候補は${spotNames}です。`;
-      } else if (optionalSpotsForReply.length === 2) {
-        candidateText = `候補は${spotNames}の2つです。`;
-      } else {
-        candidateText = `候補は${spotNames}の${optionalSpotsForReply.length}つです。`;
-      }
-      cleanReply = `まず、古窯から${destinationName}への帰路（確定ルート）を作りました。途中で立ち寄れそうな${candidateText}\n\n${cleanReply}`;
+      // 番号付きリストを生成
+      const numberedList = optionalSpotsForReply
+        .map((s: any, idx: number) => {
+          const category = s.category || "観光スポット";
+          return `(${idx + 1}) ${s.name}（${category}）`;
+        })
+        .join("\n");
+      
+      const candidateCount = optionalSpotsForReply.length;
+      const candidateText = candidateCount === 1 
+        ? "次の1つです："
+        : `次の${candidateCount}つです：`;
+      
+      cleanReply = `まず、古窯から${destinationName}への【確定】直行ルートを作りました。
+途中で立ち寄れそうな候補は${candidateText}
+${numberedList}
+
+この中から、経由地として組み込みたい番号を送ってください。
+例：1 / 2 / 1と2
+※「寄らない」場合は 0 と送ってください。
+
+（補足）気になる点があれば、目的地の変更もできます。`;
     } else {
-      cleanReply = `まず、古窯から${destinationName}への帰路（確定ルート）を作りました。\n\n${cleanReply}`;
+      cleanReply = `まず、古窯から${destinationName}への【確定】直行ルートを作りました。
+
+（補足）気になる点があれば、目的地の変更もできます。`;
     }
 
     // レスポンスを構築
