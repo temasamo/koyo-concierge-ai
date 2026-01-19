@@ -5,7 +5,7 @@ import type { Spot, OriginInfo } from "@/store/spots";
 import { useSpotStore } from "@/store/spots";
 import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
 import { getDefaultEntryPoint } from "@/app/api/koyo/before/_constants/prefEntryPoints";
-import type { RouteLegInfo, RoutePoint, KoyoMode } from "@/types/route";
+import type { RouteLegInfo, RoutePoint, KoyoMode, WaypointInfo } from "@/types/route";
 import { KOYO_COORDINATES } from "@/constants/koyo";
 import RouteList from "./RouteList";
 
@@ -134,7 +134,8 @@ interface GoogleMapProps {
   showRoute?: boolean; // ルート表示の有効/無効（デフォルト: false）
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
   origin?: OriginInfo; // Pre-Checkinモード用のorigin情報
-  routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number }>; destination: { lat: number; lng: number } } | null; // ルート情報（APIから取得）
+  destination?: OriginInfo; // Afterモード用のdestination情報
+  routeInfo?: { origin: { lat: number; lng: number }; waypoints: WaypointInfo[]; destination: { lat: number; lng: number } } | null; // ルート情報（APIから取得）
   onRouteWarningChange?: (warning: string | null) => void; // ルート取得失敗時の警告メッセージを親に通知
   showRouteList?: boolean; // RouteList の表示状態（親から制御）
   onShowRouteListChange?: (show: boolean) => void; // RouteList の表示状態を変更する関数
@@ -148,6 +149,7 @@ export default function GoogleMap({
   showRoute = false,
   koyoOrigin,
   origin,
+  destination,
   routeInfo,
   onRouteWarningChange,
   showRouteList: showRouteListProp,
@@ -301,6 +303,33 @@ export default function GoogleMap({
 
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {
+    // デバッグ: routeInfo/routePlan/spots/validSpots の整合を確認（早期リターン前にも出力）
+    const currentRoutePlan = useSpotStore.getState().routePlan;
+    const detectedMode = detectMode(origin, routeInfo?.destination, koyoOrigin);
+    
+    // null安全性チェック：有効な座標を持つスポットのみをフィルタリング（候補ピン用/後方互換用）
+    const validSpots = (routeSpots || []).filter(
+      (s) => s.lat != null && s.lng != null
+    ) as Array<Spot & { lat: number; lng: number }>;
+    
+    console.log("[drawRoute]", {
+      mode: detectedMode,
+      showRoute,
+      hasDirectionsService: !!directionsServiceRef.current,
+      hasDirectionsRenderer: !!directionsRendererRef.current,
+      hasRouteInfo: !!routeInfo,
+      hasRouteInfoOrigin: !!routeInfo?.origin,
+      hasRouteInfoDestination: !!routeInfo?.destination,
+      planSpotIds: currentRoutePlan?.spots?.slice(0, 10).map(s => s.id) || [],
+      planSpotIdsCount: currentRoutePlan?.spots?.length || 0,
+      storeSpotIds: routeSpots?.slice(0, 10).map(s => s.id) || [],
+      storeSpotIdsCount: routeSpots?.length || 0,
+      validSpotIds: validSpots?.slice(0, 10).map(s => s.id) || [],
+      validSpotIdsCount: validSpots?.length || 0,
+      waypointSpotIds: routeInfo?.waypoints?.map(w => w.spotId) || [],
+      waypointSpotIdsCount: routeInfo?.waypoints?.length || 0,
+    });
+    
     if (!showRoute) return;
     if (!directionsServiceRef.current || !directionsRendererRef.current) {
       console.warn("[GoogleMap] Directions API not initialized");
@@ -319,10 +348,40 @@ export default function GoogleMap({
       return;
     }
 
-    // null安全性チェック：有効な座標を持つスポットのみをフィルタリング（候補ピン用/後方互換用）
-    const validSpots = (routeSpots || []).filter(
-      (s) => s.lat != null && s.lng != null
-    ) as Array<Spot & { lat: number; lng: number }>;
+    // ガード: routeInfo.waypoints の spotId がすべて validSpots または routePlan.spots に存在するかチェック
+    // 注意: setRouteInfo と setRoutePlan の更新タイミングのずれを考慮し、両方をチェック
+    if (routeInfo.waypoints && routeInfo.waypoints.length > 0) {
+      const validSpotIds = new Set(validSpots.map(s => s.id));
+      // routePlan.spots もチェック対象に追加（setRoutePlan の更新タイミングを考慮）
+      const planSpotIds = currentRoutePlan?.spots?.map(s => s.id) || [];
+      planSpotIds.forEach(id => validSpotIds.add(id));
+      
+      const missingSpotIds: string[] = [];
+      
+      for (const waypoint of routeInfo.waypoints) {
+        if (waypoint.spotId && !validSpotIds.has(waypoint.spotId)) {
+          missingSpotIds.push(waypoint.spotId);
+        }
+      }
+      
+      if (missingSpotIds.length > 0) {
+        console.warn("[drawRoute] Guard: Missing spotIds in validSpots/routePlan.spots, skipping route drawing", {
+          missingSpotIds,
+          waypointSpotIds: routeInfo.waypoints.map(w => w.spotId).filter(Boolean),
+          validSpotIds: Array.from(validSpotIds),
+          validSpotIdsCount: validSpotIds.size,
+          planSpotIdsCount: planSpotIds.length,
+          waypointCount: routeInfo.waypoints.length,
+        });
+        return;
+      }
+      
+      console.log("[drawRoute] Guard: All waypoint spotIds found in validSpots/routePlan.spots", {
+        waypointCount: routeInfo.waypoints.length,
+        validSpotIdsCount: validSpotIds.size,
+        planSpotIdsCount: planSpotIds.length,
+      });
+    }
 
     // Phase2-1: waypoints決定を冒頭で一本化（最優先はrouteInfo.waypoints）
     // - 配列が存在するなら（空配列でも）必ず採用
@@ -339,15 +398,21 @@ export default function GoogleMap({
       stopover: true;
       category?: string | null;
       city?: string | null;
+      spotId?: string;
     }> = hasWaypointsArray
-      ? (routeInfo!.waypoints || []).map((wp, idx) => {
-          const spot = validSpots[idx];
+      ? (routeInfo!.waypoints || []).map((wp) => {
+          // spotIdでspotを検索（AfterではspotId必須）
+          let spot: Spot | null = null;
+          if (wp.spotId) {
+            spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
+          }
           return {
             name: spot?.name || "",
             location: { lat: wp.lat, lng: wp.lng },
             stopover: true as const,
             category: spot?.category ?? null,
             city: spot?.city ?? null,
+            spotId: wp.spotId, // spotIdを保持
           };
         })
       : validSpots.map((s) => ({
@@ -356,6 +421,7 @@ export default function GoogleMap({
           stopover: true as const,
           category: s.category ?? null,
           city: s.city ?? null,
+          spotId: s.id, // spotIdを保持
         }));
     console.log("[GoogleMap] Phase2-1 resolvedRouteWaypoints (fact-check):", {
       count: resolvedRouteWaypoints.length,
@@ -521,10 +587,14 @@ export default function GoogleMap({
     
     // waypointsの詳細検証（各座標の型と値を確認）
     const waypointDetails = routeWaypoints.map((wp, index) => {
-      const spot = validSpots[index];
+      // spotIdでspotを取得（一貫性のため）
+      let spot: Spot | null = null;
+      if (wp.spotId) {
+        spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
+      }
       return {
         index,
-        spotId: spot?.id || "unknown",
+        spotId: spot?.id || wp.spotId || "unknown",
         spotName: spot?.name || "unknown",
         location: wp.location,
         latType: typeof wp.location.lat,
@@ -563,7 +633,12 @@ export default function GoogleMap({
 
     // destination の名前を取得する関数
     const getDestinationName = () => {
-      // routeInfo が存在し、destination が古窯と異なる場合
+      // 1. destination プロパティの name を最優先でチェック
+      if (destination && destination.name) {
+        return `到着：${destination.name}`;
+      }
+      
+      // 2. routeInfo が存在し、destination が古窯と異なる場合
       if (routeInfo && routeInfo.destination) {
         const dest = routeInfo.destination;
         const koyoLat = koyoOrigin?.lat || center.lat;
@@ -626,6 +701,42 @@ export default function GoogleMap({
     const buildRouteLegs = (legs: any[] | null): RouteLegInfo[] => {
       const originName = getOriginName();
       const destinationName = getDestinationName();
+      
+      // spot解決ヘルパー関数（spotId参照で統一）
+      // 注意: setRouteInfo と setRoutePlan の更新タイミングのずれを考慮し、routePlan.spots も検索対象に追加
+      const resolveSpotByWaypoint = (wp: WaypointInfo | undefined): Spot | null => {
+        if (!wp?.spotId) return null;
+        // まず validSpots から検索
+        let spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
+        // 見つからない場合は routePlan.spots から検索（setRoutePlan の更新タイミングを考慮）
+        if (!spot && currentRoutePlan?.spots) {
+          spot = currentRoutePlan.spots.find((s) => s.id === wp.spotId) ?? null;
+        }
+        // missログ
+        if (!spot) {
+          console.warn("[resolveSpotByWaypoint miss]", wp.spotId, {
+            validSpotIds: validSpots.map(s => s.id),
+            validSpotIdsCount: validSpots.length,
+            planSpotIds: currentRoutePlan?.spots?.map(s => s.id) || [],
+            planSpotIdsCount: currentRoutePlan?.spots?.length || 0,
+            waypointCoords: { lat: wp.lat, lng: wp.lng },
+          });
+        }
+        return spot;
+      };
+      
+      // デバッグ: routeInfo.waypointsとvalidSpotsの内容を確認
+      console.log("[GoogleMap] buildRouteLegs: routeInfo.waypoints", routeInfo?.waypoints?.map(wp => ({
+        spotId: wp.spotId,
+        lat: wp.lat,
+        lng: wp.lng,
+      })));
+      console.log("[GoogleMap] buildRouteLegs: validSpots", validSpots.map(s => ({
+        id: s.id,
+        name: s.name,
+        lat: s.lat,
+        lng: s.lng,
+      })));
 
       // legs がない場合（ZERO_RESULTS など）は、スポット情報から生成
       if (!legs || legs.length === 0) {
@@ -736,22 +847,46 @@ export default function GoogleMap({
       }
       
       // 各legを処理して、スポットごとに1つのRouteLegInfoを作成
+      // routeInfo.waypoints の順番に完全追従（spotIdで検索）
       legs.forEach((leg, index) => {
-        // leg の to 先に対応するスポット
-        // index < validSpots.length の場合、legs[index] の to 先は validSpots[index]
-        // index === validSpots.length の場合、legs[index] の to 先は destination
-        const spot = index < validSpots.length ? validSpots[index] : null;
+        // routeInfo.waypoints の順番に従ってspotを取得
+        let spot: Spot | null = null;
+        if (index < routeInfo.waypoints.length) {
+          const waypoint = routeInfo.waypoints[index];
+          // spotIdでspotを検索（AfterではspotId必須）
+          spot = resolveSpotByWaypoint(waypoint);
+          if (!spot && waypoint.spotId) {
+            console.warn("[GoogleMap] buildRouteLegs: spotId not found in validSpots", {
+              waypointIndex: index,
+              spotId: waypoint.spotId,
+              waypointCoords: { lat: waypoint.lat, lng: waypoint.lng },
+              validSpotsIds: validSpots.map(s => s.id),
+              validSpotsNames: validSpots.map(s => s.name),
+            });
+            // 保険として座標近傍検索（After正常系では使わない）
+            spot = validSpots.find((s) => 
+              Math.abs(s.lat! - waypoint.lat) < 0.000001 &&
+              Math.abs(s.lng! - waypoint.lng) < 0.000001
+            ) ?? null;
+          }
+        }
 
-        // 最初の leg の from は出発地名
-        const fromName =
-          index === 0
-            ? originName.replace("出発：", "")
-            : index <= validSpots.length
-            ? validSpots[index - 1]?.name ?? originName.replace("出発：", "")
-            : originName.replace("出発：", "");
+        // fromName生成（spotId参照に統一）
+        let fromName: string;
+        if (index === 0) {
+          fromName = originName.replace("出発：", "");
+        } else if (index > 0 && index <= routeInfo.waypoints.length) {
+          // 前のwaypointのspotIdでspotを取得
+          const prevWaypoint = routeInfo.waypoints[index - 1];
+          const prevSpot = resolveSpotByWaypoint(prevWaypoint);
+          fromName = prevSpot?.name ?? originName.replace("出発：", "");
+        } else {
+          fromName = originName.replace("出発：", "");
+        }
 
         // 最後の leg の to は到着地名、それ以外はスポット名
         const isLastLeg = index === legs.length - 1;
+        // ③ 見つからなければ leg.end_address / 座標表示
         const toName = isLastLeg
           ? destinationName.replace("到着：", "")
           : spot?.name ??
@@ -806,14 +941,18 @@ export default function GoogleMap({
         label: "", // assignLabelで設定
         name: getOriginName().replace("出発：", ""),
       },
-      ...routeWaypoints.map((wp, idx) => {
-        const spot = validSpots[idx];
+      ...routeWaypoints.map((wp) => {
+        // spotIdでspotを取得
+        let spot: Spot | null = null;
+        if (wp.spotId) {
+          spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
+        }
         return {
           location: wp.location,
           pointType: "waypoint" as const,
           label: "", // assignLabelで設定
-          name: spot?.name || wp.name || `スポット${idx + 1}`,
-          spotId: spot?.id || null,
+          name: spot?.name || wp.name || `スポット`,
+          spotId: spot?.id || wp.spotId || null,
           category: spot?.category || wp.category || null,
           city: spot?.city || wp.city || null,
         };
@@ -1037,8 +1176,14 @@ export default function GoogleMap({
         });
       } else if (point.spotId) {
         // スポットの場合（waypoint）
-        // スポット情報を取得
-        const spot = markers.find((s) => s.id === point.spotId);
+        // スポット情報を取得（markers配列とroutePlan.spotsの両方を検索）
+        // 注意: setRouteInfo と setRoutePlan の更新タイミングのずれを考慮し、routePlan.spots も検索対象に追加
+        let spot = markers.find((s) => s.id === point.spotId);
+        // 見つからない場合は routePlan.spots から検索（setRoutePlan の更新タイミングを考慮）
+        if (!spot) {
+          const currentRoutePlan = useSpotStore.getState().routePlan;
+          spot = currentRoutePlan?.spots?.find((s) => s.id === point.spotId) ?? undefined;
+        }
         if (spot) {
         const imageUrl = (spot as any).photoUrl || spot.imageUrl || "/noimage.png";
           infoWindowContent = `
@@ -1062,11 +1207,18 @@ export default function GoogleMap({
             ${spot.drive_minutes != null ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">車で約${spot.drive_minutes}分</p>` : spot.drive_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">${spot.drive_time}</p>` : ""}
             ${spot.stay_time ? `<p style="margin:0 0 4px; font-size:12px; color:#666;">滞在時間: ${spot.stay_time}</p>` : ""}
             ${spot.season ? `<p style="margin:0; font-size:12px; color:#666;">シーズン: ${spot.season}</p>` : ""}
+            ${spot.description ? `<p style="margin:4px 0 0; font-size:12px; color:#666; line-height:1.5;">${spot.description}</p>` : ""}
           </div>
         `;
           infoWindow = new InfoWindow({
             content: infoWindowContent,
         });
+        } else {
+          // スポットが見つからない場合の警告ログ
+          console.warn("[GoogleMap] InfoWindow: spot not found for spotId:", point.spotId, {
+            markerIds: markers.map(s => s.id),
+            planSpotIds: useSpotStore.getState().routePlan?.spots?.map(s => s.id) || [],
+          });
         }
       }
 

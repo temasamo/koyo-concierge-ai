@@ -36,9 +36,11 @@ export type OriginInfo = {
   name?: string | null; // オプショナル（fixed タイプの場合のみ使用）
 };
 
+import type { WaypointInfo } from "@/types/route";
+
 export type RouteInfo = {
   origin: { lat: number; lng: number };
-  waypoints: Array<{ lat: number; lng: number }>;
+  waypoints: WaypointInfo[];
   destination: { lat: number; lng: number };
 };
 

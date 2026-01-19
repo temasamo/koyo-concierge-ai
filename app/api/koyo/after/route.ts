@@ -783,6 +783,7 @@ export async function POST(req: NextRequest) {
           const reversedWaypoints = reversedSpots.map(s => ({
             lat: s.lat!,
             lng: s.lng!,
+            spotId: s.id,
           }));
           
           // routeInfo を構築
@@ -957,6 +958,7 @@ ${numberedList}
       const waypoints = selectedSpots.map(s => ({
         lat: s.lat!,
         lng: s.lng!,
+        spotId: s.id,
       }));
       
       // routeInfo を構築（origin/destination は既存の値を使用）

@@ -1,5 +1,12 @@
 // types/route.ts
 
+// WaypointInfo: routeInfo.waypoints の要素型（AfterモードではspotId必須）
+export type WaypointInfo = {
+  lat: number;
+  lng: number;
+  spotId?: string;
+};
+
 export type RouteLegInfo = {
   index: number;               // 0,1,2,... （UIでは ①②③ 表示）
   fromName: string;            // 出発地名（例：日本の宿 古窯）

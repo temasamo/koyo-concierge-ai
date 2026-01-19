@@ -14,6 +14,7 @@ export default function MapPage() {
   const { mode } = useKoyoMode();
   const spots = useSpotStore((state) => state.spots);
   const origin = useSpotStore((state) => state.origin);
+  const destination = useSpotStore((state) => state.destination);
   const routeInfo = useSpotStore((state) => state.routeInfo);
   const addMessage = useMessageStore((state) => state.addMessage);
   const [routeWarning, setRouteWarning] = useState<string | null>(null);
@@ -144,6 +145,7 @@ export default function MapPage() {
           showRoute={true}
           koyoOrigin={center}
           origin={origin}
+          destination={destination}
           routeInfo={routeInfo}
           onRouteWarningChange={setRouteWarning}
           showRouteList={showRouteList}

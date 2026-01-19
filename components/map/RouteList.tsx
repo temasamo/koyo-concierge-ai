@@ -69,9 +69,9 @@ export default function RouteList({
         <p className="text-gray-600 text-sm">ルートが見つかりません。</p>
       ) : (
         <div className="space-y-3">
-          {routeLegs.map((leg) => (
+          {routeLegs.map((leg, arrayIndex) => (
             <div
-              key={leg.index}
+              key={`leg-${arrayIndex}-${leg.index}`}
               className="flex gap-3 border-t border-gray-100 pt-3 first:border-t-0 first:pt-0"
             >
               {/* 番号バッジ */}

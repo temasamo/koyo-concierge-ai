@@ -124,37 +124,7 @@ export default function Page() {
       // エンドポイントを決定（ルート編集は考慮しない）
       const apiEndpoint = `/api/koyo/${mode}`;
       
-      // API コール（userStateを明示的に指定）
-      const store = useSpotStore.getState();
-      const currentOptionalSpots = store.optionalSpots;
-      const currentRouteInfo = store.routeInfo;
-      const currentSpots = store.spots; // 確定済み経由地
-      
-      // Phase2-2完了後（確定済み経由地がある場合）は phase: "after:phase2_2_done" を送る
-      const phase = currentSpots.length > 0 ? "after:phase2_2_done" : "after:phase2_2_waiting_selection";
-      
-      // destination座標を確定（currentDestinationから優先、なければrouteInfoから）
-      let destinationCoords: { lat: number; lng: number } | undefined;
-      if (mode === "after" && params.userState.destination) {
-        const dest = params.userState.destination;
-        if (dest.type === "pref-boundary" && dest.pref) {
-          // pref-boundaryの場合は境界座標を取得
-          const prefBoundary = getPrefBoundary(dest.pref as PrefectureKey);
-          if (prefBoundary) {
-            destinationCoords = prefBoundary;
-          }
-        } else if (dest.lat && dest.lng) {
-          destinationCoords = {
-            lat: dest.lat,
-            lng: dest.lng,
-          };
-        }
-      }
-      // currentDestinationから取得できない場合はrouteInfoから補助的に取得
-      if (!destinationCoords && currentRouteInfo?.destination) {
-        destinationCoords = currentRouteInfo.destination;
-      }
-      
+      // payload構築直前に最新の状態を取得
       const requestBody = {
         messages: latestMessages,
         userState: {
@@ -162,19 +132,52 @@ export default function Page() {
           destination: mode === "after" ? params.userState.destination : undefined,
           originInputMode: params.userState.originInputMode,
           ...(mode === "after"
-            ? {
-                context: {
-                  after: {
-                    phase,
-                    optionalSpots: currentOptionalSpots,
-                    spots: currentSpots.length > 0 ? currentSpots : undefined, // 確定済み経由地（順番変更用）
-                    // routeInfoは巨大なので、再生成に必要な最小情報だけ送る
-                    routeInfoKey: "direct", // 直行ルートを意味するフラグ
-                    origin: currentRouteInfo?.origin || KOYO_COORDINATES,
-                    destination: destinationCoords, // 確定した座標を送る
+            ? (() => {
+                // payload構築直前に最新の状態を取得
+                const store = useSpotStore.getState();
+                const currentSpots = store.spots; // 確定済み経由地（最新の値を取得）
+                const currentRouteInfo = store.routeInfo;
+                const currentOptionalSpots = store.optionalSpots;
+                
+                // Phase2-2完了後（確定済み経由地がある場合）は phase: "after:phase2_2_done" を送る
+                const phase = currentSpots.length > 0 ? "after:phase2_2_done" : "after:phase2_2_waiting_selection";
+                
+                // destination座標を確定（currentDestinationから優先、なければrouteInfoから）
+                let destinationCoords: { lat: number; lng: number } | undefined;
+                if (mode === "after" && params.userState.destination) {
+                  const dest = params.userState.destination;
+                  if (dest.type === "pref-boundary" && dest.pref) {
+                    // pref-boundaryの場合は境界座標を取得
+                    const prefBoundary = getPrefBoundary(dest.pref as PrefectureKey);
+                    if (prefBoundary) {
+                      destinationCoords = prefBoundary;
+                    }
+                  } else if (dest.lat && dest.lng) {
+                    destinationCoords = {
+                      lat: dest.lat,
+                      lng: dest.lng,
+                    };
+                  }
+                }
+                // currentDestinationから取得できない場合はrouteInfoから補助的に取得
+                if (!destinationCoords && currentRouteInfo?.destination) {
+                  destinationCoords = currentRouteInfo.destination;
+                }
+                
+                return {
+                  context: {
+                    after: {
+                      phase,
+                      optionalSpots: currentOptionalSpots,
+                      spots: currentSpots.length > 0 ? currentSpots : undefined, // 必ず最新の値を使用
+                      // routeInfoは巨大なので、再生成に必要な最小情報だけ送る
+                      routeInfoKey: "direct", // 直行ルートを意味するフラグ
+                      origin: currentRouteInfo?.origin || KOYO_COORDINATES,
+                      destination: destinationCoords, // 確定した座標を送る
+                    },
                   },
-                },
-              }
+                };
+              })()
             : {}),
         },
       };
@@ -221,20 +224,20 @@ export default function Page() {
       }
       
       // Phase2-2: レスポンス適用（状態更新ルール厳守）
-      // 順番：1. setRoutePlan（routeInfoは触らない） 2. setRouteInfo（唯一経路） 3. setOptionalSpots（候補更新）
+      // 順番：1. setRouteInfo（唯一経路、先に更新） 2. setRoutePlan（spotsも自動更新される） 3. setOptionalSpots（候補更新）
       if (mode === "after" && data.phase === "after:phase2_2_done") {
         console.log("[page.tsx] sendMessageWithUserState Phase2-2: Processing phase2_2_done response");
         
-        // 1. RoutePlan の更新（routeInfoは触らない）
-        if (data.routePlan) {
-          setRoutePlan(data.routePlan);
-          console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set routePlan:", data.routePlan.planId);
-        }
-        
-        // 2. routeInfo の更新（唯一経路）
+        // 1. routeInfo の更新（唯一経路、先に更新）
         if (data.routeInfo) {
           setRouteInfo(data.routeInfo);
           console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set routeInfo (waypoints:", data.routeInfo.waypoints?.length || 0, ")");
+        }
+        
+        // 2. RoutePlan の更新（routeInfo更新後に実行、spotsも自動更新される）
+        if (data.routePlan) {
+          setRoutePlan(data.routePlan);
+          console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set routePlan:", data.routePlan.planId);
         }
         
         // 3. optionalSpots の更新（候補更新があれば）
@@ -243,11 +246,7 @@ export default function Page() {
           console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set optionalSpots:", data.optionalSpots.length);
         }
         
-        // spots（確定経由地）の更新
-        if (data.spots && Array.isArray(data.spots)) {
-          setSpots(data.spots);
-          console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set spots (confirmed waypoints):", data.spots.length);
-        }
+        // spots（確定経由地）の更新は不要（setRoutePlanで自動更新される）
       } else {
         // Phase2-1 または通常の処理
         // routeInfo の扱い
@@ -367,8 +366,9 @@ export default function Page() {
               originInputMode: originInputMode,
               ...(mode === "after"
                 ? (() => {
+                    // payload構築直前に最新の状態を取得
                     const store = useSpotStore.getState();
-                    const currentSpots = store.spots; // 確定済み経由地
+                    const currentSpots = store.spots; // 確定済み経由地（最新の値を取得）
                     const currentRouteInfo = store.routeInfo;
                     const currentOptionalSpots = store.optionalSpots;
                     
@@ -400,7 +400,7 @@ export default function Page() {
                         after: {
                           phase,
                           optionalSpots: currentOptionalSpots,
-                          spots: currentSpots.length > 0 ? currentSpots : undefined, // 確定済み経由地（順番変更用）
+                          spots: currentSpots.length > 0 ? currentSpots : undefined, // 必ず最新の値を使用
                           // routeInfoは巨大なので、再生成に必要な最小情報だけ送る
                           routeInfoKey: "direct", // 直行ルートを意味するフラグ
                           origin: currentRouteInfo?.origin || KOYO_COORDINATES,
@@ -539,20 +539,20 @@ export default function Page() {
       }
 
       // Phase2-2: レスポンス適用（状態更新ルール厳守）
-      // 順番：1. setRoutePlan（routeInfoは触らない） 2. setRouteInfo（唯一経路） 3. setOptionalSpots（候補更新）
+      // 順番：1. setRouteInfo（唯一経路、先に更新） 2. setRoutePlan（spotsも自動更新される） 3. setOptionalSpots（候補更新）
       if (mode === "after" && data.phase === "after:phase2_2_done") {
         console.log("[page.tsx] Phase2-2: Processing phase2_2_done response");
         
-        // 1. RoutePlan の更新（routeInfoは触らない）
-        if (data.routePlan) {
-          setRoutePlan(data.routePlan);
-          console.log("[page.tsx] Phase2-2: Set routePlan:", data.routePlan.planId);
-        }
-        
-        // 2. routeInfo の更新（唯一経路）
+        // 1. routeInfo の更新（唯一経路、先に更新）
         if (data.routeInfo) {
           setRouteInfo(data.routeInfo);
           console.log("[page.tsx] Phase2-2: Set routeInfo (waypoints:", data.routeInfo.waypoints?.length || 0, ")");
+        }
+        
+        // 2. RoutePlan の更新（routeInfo更新後に実行、spotsも自動更新される）
+        if (data.routePlan) {
+          setRoutePlan(data.routePlan);
+          console.log("[page.tsx] Phase2-2: Set routePlan:", data.routePlan.planId, "spots:", data.routePlan.spots.length);
         }
         
         // 3. optionalSpots の更新（候補更新があれば）
@@ -561,32 +561,7 @@ export default function Page() {
           console.log("[page.tsx] Phase2-2: Set optionalSpots:", data.optionalSpots.length);
         }
         
-        // spots（確定経由地）の更新
-        if (data.spots && Array.isArray(data.spots)) {
-          setSpots(data.spots);
-          console.log("[page.tsx] Phase2-2: Set spots (confirmed waypoints):", data.spots.length);
-        }
-      } else if (mode === "after" && data.phase === "after:phase2_2_done") {
-        // Phase2-2完了後の処理（順番変更対応）
-        // 1. RoutePlan の更新（routeInfoは触らない）
-        if (data.routePlan) {
-          setRoutePlan(data.routePlan);
-        }
-        
-        // 2. routeInfo の更新（唯一経路）
-        if (data.routeInfo) {
-          setRouteInfo(data.routeInfo);
-        }
-        
-        // 3. optionalSpots の更新（候補更新があれば）
-        if (data.optionalSpots && Array.isArray(data.optionalSpots)) {
-          setOptionalSpots(data.optionalSpots);
-        }
-        
-        // spots（確定経由地）の更新
-        if (data.spots && Array.isArray(data.spots)) {
-          setSpots(data.spots);
-        }
+        // spots（確定経由地）の更新は不要（setRoutePlanで自動更新される）
       } else {
         // Phase2-1 または通常の処理
         // 🔽 routeInfo の扱い
