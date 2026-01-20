@@ -1493,6 +1493,10 @@ F. その他
     const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
     const stopIntent = detectStopIntent(stopIntentMessage);
     
+    // 検証ログ1: foodIntent（foodCategory）をログ出し
+    const foodIntent = stopIntent?.foodCategory || null;
+    console.log("[after] foodIntent:", foodIntent, "userText:", stopIntentMessage);
+    
     console.log("[koyo-after] StopIntent detection:", {
       stopIntentMessage,
       stopIntent,
@@ -1522,6 +1526,15 @@ F. その他
         destinationCoords = KOYO_COORDINATES;
       }
       
+      // 検証ログ2: optionalSpotsを作る直前で、候補の生成元をログ出し
+      const fromDbCount = matchedSpots?.filter((s: Spot) => !s.id?.startsWith("places_")).length || 0;
+      const fromPlacesCount = matchedSpots?.filter((s: Spot) => s.id?.startsWith("places_")).length || 0;
+      console.log("[after] optionalSpots source (before integratePlaces):", {
+        fromDbCount,
+        fromPlacesCount,
+        totalCount: matchedSpots?.length || 0,
+      });
+      
       const result = await integratePlaces(
         matchedSpots || [],
         stopIntent,
@@ -1532,6 +1545,17 @@ F. その他
       matchedSpots = result.spots;
       placesApiFailed = result.placesApiFailed;
       placesAdded = result.placesAdded;
+      
+      // 検証ログ2: integratePlaces後の生成元をログ出し
+      const fromDbCountAfter = matchedSpots?.filter((s: Spot) => !s.id?.startsWith("places_")).length || 0;
+      const fromPlacesCountAfter = matchedSpots?.filter((s: Spot) => s.id?.startsWith("places_")).length || 0;
+      console.log("[after] optionalSpots source (after integratePlaces):", {
+        fromDbCount: fromDbCountAfter,
+        fromPlacesCount: fromPlacesCountAfter,
+        totalCount: matchedSpots?.length || 0,
+        placesApiFailed,
+        placesAdded,
+      });
       
       console.log("[koyo-after] Places integration result:", {
         placesApiFailed,
@@ -1658,6 +1682,16 @@ ${numberedList}
 
     // Phase2-1: optionalSpots を追加（matchedSpots をそのまま、spotRole: "optional" を付与）
     if (matchedSpots && matchedSpots.length > 0) {
+      // 検証ログ3: optionalSpotsを返す直前で、各スポットのname/tags/categoryを3件分ログ出し
+      const sampleSpots = matchedSpots.slice(0, 3).map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        tags: s.tags,
+        category: s.category,
+        source: s.id?.startsWith("places_") ? "places" : "db",
+      }));
+      console.log("[after] optionalSpots sample (first 3):", sampleSpots);
+      
       response.optionalSpots = matchedSpots.map((spot: any) => ({
         ...spot,
         spotRole: "optional" as const,
