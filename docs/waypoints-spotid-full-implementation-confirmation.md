@@ -105,3 +105,4 @@ const waypointDetails = routeWaypoints.map((wp, index) => {
 6. `waypointDetails`をspotId参照に変更（任意だが推奨）
 7. 動作確認
 
+

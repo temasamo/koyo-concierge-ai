@@ -155,3 +155,4 @@ const waypointDetails = routeWaypoints.map((wp, index) => {
 4. legsがない場合の処理を確認・修正（必要に応じて）
 5. 動作確認
 
+

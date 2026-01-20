@@ -118,3 +118,4 @@ const getDestinationName = () => {
    - もし`destinationName`が空文字列や未定義の場合、`leg.end_address`が使われる可能性がある
    - ただし、コード上は`isLastLeg`が`true`の場合は使われないはず
 
+

@@ -246,3 +246,4 @@ if (data.routePlan) {
 - `spotId`が存在しない場合は、座標ベースの検索にフォールバックする
 - `buildRouteLegs`関数では、`routeInfo.waypoints`の順番をそのまま使用する
 
+

@@ -135,3 +135,4 @@ const destination = useSpotStore((s) => s.destination);
 - ルート一覧の最後の項目（目的地）に、正しい目的地名（例：「山形駅」「宮城方面」）が表示される
 - 住所が表示されなくなる
 
+

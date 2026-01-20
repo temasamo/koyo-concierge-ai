@@ -156,7 +156,7 @@ export default function GoogleMap({
   onShowRouteListChange,
   onSpotDoubleClick,
 }: GoogleMapProps) {
-  const { routeLegs, setRouteLegs } = useSpotStore();
+  const { routeLegs, setRouteLegs, routeReady, routeVersion } = useSpotStore();
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -301,11 +301,51 @@ export default function GoogleMap({
     }
   }, [routeLegs.length, onShowRouteListChange]);
 
+  // Phase2-2.5: validateRouteState関数（pure関数化）
+  const validateRouteState = useCallback((
+    routeInfo: RouteInfo | null | undefined,
+    validSpots: Array<Spot & { lat: number; lng: number }>,
+    routePlanSpots: Array<{ id: string }> | undefined
+  ): { ok: true } | { ok: false; missingSpotIds: string[] } => {
+    // waypointsが空（直行ルート）の場合は常にOK
+    if (!routeInfo?.waypoints || routeInfo.waypoints.length === 0) {
+      return { ok: true };
+    }
+
+    // routeInfoがない場合はNG
+    if (!routeInfo) {
+      return { ok: false, missingSpotIds: [] };
+    }
+
+    const validSpotIds = new Set(validSpots.map(s => s.id));
+    // routePlan.spots もチェック対象に追加
+    const planSpotIds = routePlanSpots?.map(s => s.id) || [];
+    planSpotIds.forEach(id => validSpotIds.add(id));
+    
+    const missingSpotIds: string[] = [];
+    
+    for (const waypoint of routeInfo.waypoints) {
+      if (waypoint.spotId && !validSpotIds.has(waypoint.spotId)) {
+        missingSpotIds.push(waypoint.spotId);
+      }
+    }
+    
+    if (missingSpotIds.length > 0) {
+      return { ok: false, missingSpotIds };
+    }
+    
+    return { ok: true };
+  }, []);
+
   // Directions APIでルートを描画する関数
   const drawRoute = useCallback((routeSpots: Spot[]) => {
-    // デバッグ: routeInfo/routePlan/spots/validSpots の整合を確認（早期リターン前にも出力）
-    const currentRoutePlan = useSpotStore.getState().routePlan;
-    const detectedMode = detectMode(origin, routeInfo?.destination, koyoOrigin);
+    // Phase2-2.5: drawRoute実行時に1回だけstateを読み取る
+    const currentState = useSpotStore.getState();
+    const currentRouteInfo = currentState.routeInfo;
+    const currentRoutePlan = currentState.routePlan;
+    const currentRouteReady = currentState.routeReady;
+    
+    const detectedMode = detectMode(origin, currentRouteInfo?.destination, koyoOrigin);
     
     // null安全性チェック：有効な座標を持つスポットのみをフィルタリング（候補ピン用/後方互換用）
     const validSpots = (routeSpots || []).filter(
@@ -315,19 +355,21 @@ export default function GoogleMap({
     console.log("[drawRoute]", {
       mode: detectedMode,
       showRoute,
+      routeReady: currentRouteReady,
+      routeVersion: currentState.routeVersion,
       hasDirectionsService: !!directionsServiceRef.current,
       hasDirectionsRenderer: !!directionsRendererRef.current,
-      hasRouteInfo: !!routeInfo,
-      hasRouteInfoOrigin: !!routeInfo?.origin,
-      hasRouteInfoDestination: !!routeInfo?.destination,
+      hasRouteInfo: !!currentRouteInfo,
+      hasRouteInfoOrigin: !!currentRouteInfo?.origin,
+      hasRouteInfoDestination: !!currentRouteInfo?.destination,
       planSpotIds: currentRoutePlan?.spots?.slice(0, 10).map(s => s.id) || [],
       planSpotIdsCount: currentRoutePlan?.spots?.length || 0,
       storeSpotIds: routeSpots?.slice(0, 10).map(s => s.id) || [],
       storeSpotIdsCount: routeSpots?.length || 0,
       validSpotIds: validSpots?.slice(0, 10).map(s => s.id) || [],
       validSpotIdsCount: validSpots?.length || 0,
-      waypointSpotIds: routeInfo?.waypoints?.map(w => w.spotId) || [],
-      waypointSpotIdsCount: routeInfo?.waypoints?.length || 0,
+      waypointSpotIds: currentRouteInfo?.waypoints?.map(w => w.spotId) || [],
+      waypointSpotIdsCount: currentRouteInfo?.waypoints?.length || 0,
     });
     
     if (!showRoute) return;
@@ -336,60 +378,48 @@ export default function GoogleMap({
       return;
     }
 
-    // デバッグ: originの状態を確認
-    console.log("[GoogleMap] drawRoute called - origin:", origin);
-    console.log("[GoogleMap] drawRoute called - routeInfo:", routeInfo);
-
-    // routeInfo がない場合は描画材料が不足（Phase2-1: 直行ルートは routeInfo 前提）
-    if (!routeInfo?.origin || !routeInfo?.destination) {
-      // 後方互換: routeInfo が無い場合は従来ロジックに委ねたいが、
-      // 現状の設計では routeInfo がないと destination が確定できないため終了する。
-      console.warn("[GoogleMap] No routeInfo.origin/destination; skipping drawRoute");
+    // Phase2-2.5: routeReady/routeInfoのガード
+    if (!currentRouteReady || !currentRouteInfo) {
+      console.log("[GoogleMap] drawRoute skipped: route not ready or routeInfo missing", {
+        routeReady: currentRouteReady,
+        hasRouteInfo: !!currentRouteInfo,
+        routeVersion: currentState.routeVersion,
+      });
       return;
     }
 
-    // ガード: routeInfo.waypoints の spotId がすべて validSpots または routePlan.spots に存在するかチェック
-    // 注意: setRouteInfo と setRoutePlan の更新タイミングのずれを考慮し、両方をチェック
-    if (routeInfo.waypoints && routeInfo.waypoints.length > 0) {
-      const validSpotIds = new Set(validSpots.map(s => s.id));
-      // routePlan.spots もチェック対象に追加（setRoutePlan の更新タイミングを考慮）
-      const planSpotIds = currentRoutePlan?.spots?.map(s => s.id) || [];
-      planSpotIds.forEach(id => validSpotIds.add(id));
-      
-      const missingSpotIds: string[] = [];
-      
-      for (const waypoint of routeInfo.waypoints) {
-        if (waypoint.spotId && !validSpotIds.has(waypoint.spotId)) {
-          missingSpotIds.push(waypoint.spotId);
-        }
-      }
-      
-      if (missingSpotIds.length > 0) {
-        console.warn("[drawRoute] Guard: Missing spotIds in validSpots/routePlan.spots, skipping route drawing", {
-          missingSpotIds,
-          waypointSpotIds: routeInfo.waypoints.map(w => w.spotId).filter(Boolean),
-          validSpotIds: Array.from(validSpotIds),
-          validSpotIdsCount: validSpotIds.size,
-          planSpotIdsCount: planSpotIds.length,
-          waypointCount: routeInfo.waypoints.length,
-        });
-        return;
-      }
-      
-      console.log("[drawRoute] Guard: All waypoint spotIds found in validSpots/routePlan.spots", {
-        waypointCount: routeInfo.waypoints.length,
-        validSpotIdsCount: validSpotIds.size,
-        planSpotIdsCount: planSpotIds.length,
+    // routeInfo がない場合は描画材料が不足（Phase2-1: 直行ルートは routeInfo 前提）
+    if (!currentRouteInfo.origin || !currentRouteInfo.destination) {
+      console.log("[GoogleMap] drawRoute skipped: no routeInfo.origin/destination", {
+        hasOrigin: !!currentRouteInfo.origin,
+        hasDestination: !!currentRouteInfo.destination,
+        routeVersion: currentState.routeVersion,
       });
+      return;
+    }
+
+    // Phase2-2.5: validateRouteStateでガード
+    const validation = validateRouteState(currentRouteInfo, validSpots, currentRoutePlan?.spots);
+    if (!validation.ok) {
+      console.log("[GoogleMap] route mismatch: waypoints=" + currentRouteInfo.waypoints.length + 
+        ", spots=" + validSpots.length + 
+        ", planSpots=" + (currentRoutePlan?.spots?.length || 0) + 
+        ", missingSpotIds=[" + validation.missingSpotIds.join(", ") + "]", {
+        waypointSpotIds: currentRouteInfo.waypoints.map(w => w.spotId).filter(Boolean),
+        validSpotIds: validSpots.map(s => s.id),
+        planSpotIds: currentRoutePlan?.spots?.map(s => s.id) || [],
+        routeVersion: currentState.routeVersion,
+      });
+      return;
     }
 
     // Phase2-1: waypoints決定を冒頭で一本化（最優先はrouteInfo.waypoints）
     // - 配列が存在するなら（空配列でも）必ず採用
     // - undefined/null のときだけ validSpots から生成（後方互換）
-    const hasWaypointsArray = Array.isArray(routeInfo?.waypoints);
+    const hasWaypointsArray = Array.isArray(currentRouteInfo.waypoints);
     console.log("[GoogleMap] Phase2-1 waypoint resolution (fact-check):", {
       hasWaypointsArray,
-      routeInfoWaypoints: routeInfo?.waypoints,
+      routeInfoWaypoints: currentRouteInfo.waypoints,
       validSpotsCount: validSpots.length,
     });
     const resolvedRouteWaypoints: Array<{
@@ -400,11 +430,21 @@ export default function GoogleMap({
       city?: string | null;
       spotId?: string;
     }> = hasWaypointsArray
-      ? (routeInfo!.waypoints || []).map((wp) => {
+      ? (currentRouteInfo.waypoints || []).map((wp) => {
           // spotIdでspotを検索（AfterではspotId必須）
           let spot: Spot | null = null;
           if (wp.spotId) {
             spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
+            // routePlan.spots も検索対象に追加
+            if (!spot && currentRoutePlan?.spots) {
+              const planSpot = currentRoutePlan.spots.find((s) => s.id === wp.spotId);
+              if (planSpot && planSpot.lat != null && planSpot.lng != null) {
+                spot = {
+                  ...planSpot,
+                  stayMinutes: planSpot.stayMinutes ?? undefined,
+                } as Spot & { lat: number; lng: number };
+              }
+            }
           }
           return {
             name: spot?.name || "",
@@ -430,8 +470,8 @@ export default function GoogleMap({
 
     // ルート重複判定キー（routeInfoベースで安定化）
     const currentRouteKey = [
-      `o:${routeInfo.origin.lat},${routeInfo.origin.lng}`,
-      `d:${routeInfo.destination.lat},${routeInfo.destination.lng}`,
+      `o:${currentRouteInfo.origin.lat},${currentRouteInfo.origin.lng}`,
+      `d:${currentRouteInfo.destination.lat},${currentRouteInfo.destination.lng}`,
       `w:${resolvedRouteWaypoints.map((w) => `${w.location.lat},${w.location.lng}`).join("|")}`,
     ].join(";");
     if (lastRouteSpotsRef.current === currentRouteKey) {
@@ -470,15 +510,15 @@ export default function GoogleMap({
       originType: origin?.type,
       originPref: origin?.pref,
       origin,
-      routeInfoOrigin: routeInfo?.origin,
+      routeInfoOrigin: currentRouteInfo.origin,
     });
     
     // routeInfo.originが存在し、originが設定されていない場合、routeInfo.originを優先する
     // Beforeモードで県境が設定されている場合、routeInfo.originに正しい座標が含まれている
-    if (routeInfo && routeInfo.origin && !hasPrefBoundary && !hasFixedOrigin && !hasCurrentOrigin) {
+    if (currentRouteInfo.origin && !hasPrefBoundary && !hasFixedOrigin && !hasCurrentOrigin) {
       console.log("[GoogleMap] Using routeInfo.origin as routeOrigin (origin not set)");
-      routeOrigin = routeInfo.origin;
-      routeDestination = routeInfo.destination || koyoOrigin || center;
+      routeOrigin = currentRouteInfo.origin;
+      routeDestination = currentRouteInfo.destination || koyoOrigin || center;
       console.log("[GoogleMap] Using routeInfo for route:", {
         origin: routeOrigin,
         destination: routeDestination,
@@ -514,8 +554,8 @@ export default function GoogleMap({
       // 通常モード（Stay/After/通常Before）
       routeOrigin = koyoOrigin;
       // routeInfo が存在する場合は destination を使用、なければ古窯固定
-      if (routeInfo && routeInfo.destination) {
-        routeDestination = routeInfo.destination;
+      if (currentRouteInfo.destination) {
+        routeDestination = currentRouteInfo.destination;
         console.log(
           "[GoogleMap] Using routeInfo.destination:",
           routeDestination
@@ -639,8 +679,10 @@ export default function GoogleMap({
       }
       
       // 2. routeInfo が存在し、destination が古窯と異なる場合
-      if (routeInfo && routeInfo.destination) {
-        const dest = routeInfo.destination;
+      const currentState = useSpotStore.getState();
+      const currentRouteInfoForDest = currentState.routeInfo;
+      if (currentRouteInfoForDest && currentRouteInfoForDest.destination) {
+        const dest = currentRouteInfoForDest.destination;
         const koyoLat = koyoOrigin?.lat || center.lat;
         const koyoLng = koyoOrigin?.lng || center.lng;
         
@@ -704,13 +746,13 @@ export default function GoogleMap({
       
       // spot解決ヘルパー関数（spotId参照で統一）
       // 注意: setRouteInfo と setRoutePlan の更新タイミングのずれを考慮し、routePlan.spots も検索対象に追加
-      const resolveSpotByWaypoint = (wp: WaypointInfo | undefined): Spot | null => {
+      const resolveSpotByWaypoint = (wp: WaypointInfo | undefined, routePlan: typeof currentRoutePlan): Spot | null => {
         if (!wp?.spotId) return null;
         // まず validSpots から検索
         let spot = validSpots.find((s) => s.id === wp.spotId) ?? null;
         // 見つからない場合は routePlan.spots から検索（setRoutePlan の更新タイミングを考慮）
-        if (!spot && currentRoutePlan?.spots) {
-          const planSpot = currentRoutePlan.spots.find((s) => s.id === wp.spotId);
+        if (!spot && routePlan?.spots) {
+          const planSpot = routePlan.spots.find((s) => s.id === wp.spotId);
           // lat/lngがnullでない場合のみ有効なspotとして扱う
           if (planSpot && planSpot.lat != null && planSpot.lng != null) {
             // RoutePlan.spotsの型をSpot型に変換（stayMinutesのnullをundefinedに変換）
@@ -720,21 +762,11 @@ export default function GoogleMap({
             } as Spot & { lat: number; lng: number };
           }
         }
-        // missログ
-        if (!spot) {
-          console.warn("[resolveSpotByWaypoint miss]", wp.spotId, {
-            validSpotIds: validSpots.map(s => s.id),
-            validSpotIdsCount: validSpots.length,
-            planSpotIds: currentRoutePlan?.spots?.map(s => s.id) || [],
-            planSpotIdsCount: currentRoutePlan?.spots?.length || 0,
-            waypointCoords: { lat: wp.lat, lng: wp.lng },
-          });
-        }
         return spot;
       };
       
       // デバッグ: routeInfo.waypointsとvalidSpotsの内容を確認
-      console.log("[GoogleMap] buildRouteLegs: routeInfo.waypoints", routeInfo?.waypoints?.map(wp => ({
+      console.log("[GoogleMap] buildRouteLegs: routeInfo.waypoints", currentRouteInfo.waypoints?.map(wp => ({
         spotId: wp.spotId,
         lat: wp.lat,
         lng: wp.lng,
@@ -746,10 +778,43 @@ export default function GoogleMap({
         lng: s.lng,
       })));
 
-      // legs がない場合（ZERO_RESULTS など）は、スポット情報から生成
+      // legs がない場合（ZERO_RESULTS など）は、routeInfo.waypointsのspotId優先でspot解決
       if (!legs || legs.length === 0) {
         const routeLegs: RouteLegInfo[] = [];
         
+        // waypointsが空（直行ルート）の場合: origin → destination
+        if (!currentRouteInfo.waypoints || currentRouteInfo.waypoints.length === 0) {
+          // 最初に出発地を追加
+          const firstFromName = originName.replace("出発：", "");
+          routeLegs.push({
+            index: 0,
+            fromName: firstFromName,
+            toName: firstFromName, // 表示用にtoNameにも同じ値を設定
+            distanceText: "",
+            durationText: "",
+            stayTimeText: null,
+            spotId: null,
+            category: null,
+            city: null,
+          });
+          
+          // origin → destination
+          routeLegs.push({
+            index: 1,
+            fromName: originName.replace("出発：", ""),
+            toName: destinationName.replace("到着：", ""),
+            distanceText: "",
+            durationText: "",
+            stayTimeText: null,
+            spotId: null,
+            category: null,
+            city: null,
+          });
+          
+          return routeLegs;
+        }
+        
+        // waypointsがある場合: waypoints順で origin→wp..→destination を生成
         // 最初に出発地を追加
         const firstFromName = originName.replace("出発：", "");
         routeLegs.push({
@@ -764,58 +829,49 @@ export default function GoogleMap({
           city: null,
         });
         
-        // 最初の leg: origin → 最初のスポット
-        if (validSpots.length > 0) {
-          const firstSpot = validSpots[0];
+        // 最初の leg: origin → 最初のwaypoint
+        if (currentRouteInfo.waypoints.length > 0) {
+          const firstWaypoint = currentRouteInfo.waypoints[0];
+          const firstSpot = resolveSpotByWaypoint(firstWaypoint, currentRoutePlan);
           routeLegs.push({
             index: 1,
             fromName: originName.replace("出発：", ""),
-            toName: firstSpot.name,
+            toName: firstSpot?.name ?? firstWaypoint.spotId ?? `立ち寄りスポット1`,
             distanceText: "",
             durationText: "",
-            stayTimeText: firstSpot.stay_time || null,
-            spotId: firstSpot.id,
-            category: firstSpot.category,
-            city: firstSpot.city,
+            stayTimeText: firstSpot?.stay_time || null,
+            spotId: firstSpot?.id ?? firstWaypoint.spotId ?? null,
+            category: firstSpot?.category ?? null,
+            city: firstSpot?.city ?? null,
           });
         }
 
-        // 中間の legs: スポット間
-        for (let i = 1; i < validSpots.length; i++) {
-          const prevSpot = validSpots[i - 1];
-          const currentSpot = validSpots[i];
+        // 中間の legs: waypoint間
+        for (let i = 1; i < currentRouteInfo.waypoints.length; i++) {
+          const prevWaypoint = currentRouteInfo.waypoints[i - 1];
+          const currentWaypoint = currentRouteInfo.waypoints[i];
+          const prevSpot = resolveSpotByWaypoint(prevWaypoint, currentRoutePlan);
+          const currentSpot = resolveSpotByWaypoint(currentWaypoint, currentRoutePlan);
           routeLegs.push({
             index: i + 1,
-            fromName: prevSpot.name,
-            toName: currentSpot.name,
+            fromName: prevSpot?.name ?? prevWaypoint.spotId ?? `立ち寄りスポット${i}`,
+            toName: currentSpot?.name ?? currentWaypoint.spotId ?? `立ち寄りスポット${i + 1}`,
             distanceText: "",
             durationText: "",
-            stayTimeText: currentSpot.stay_time || null,
-            spotId: currentSpot.id,
-            category: currentSpot.category,
-            city: currentSpot.city,
+            stayTimeText: currentSpot?.stay_time || null,
+            spotId: currentSpot?.id ?? currentWaypoint.spotId ?? null,
+            category: currentSpot?.category ?? null,
+            city: currentSpot?.city ?? null,
           });
         }
 
-        // 最後の leg: 最後のスポット → destination
-        if (validSpots.length > 0) {
-          const lastSpot = validSpots[validSpots.length - 1];
+        // 最後の leg: 最後のwaypoint → destination
+        if (currentRouteInfo.waypoints.length > 0) {
+          const lastWaypoint = currentRouteInfo.waypoints[currentRouteInfo.waypoints.length - 1];
+          const lastSpot = resolveSpotByWaypoint(lastWaypoint, currentRoutePlan);
           routeLegs.push({
-            index: validSpots.length + 1,
-            fromName: lastSpot.name,
-            toName: destinationName.replace("到着：", ""),
-            distanceText: "",
-            durationText: "",
-            stayTimeText: null,
-            spotId: null,
-            category: null,
-            city: null,
-          });
-        } else {
-          // スポットがない場合: origin → destination（出発地は既に追加済み）
-          routeLegs.push({
-            index: 1,
-            fromName: originName.replace("出発：", ""),
+            index: currentRouteInfo.waypoints.length + 1,
+            fromName: lastSpot?.name ?? lastWaypoint.spotId ?? `立ち寄りスポット${currentRouteInfo.waypoints.length}`,
             toName: destinationName.replace("到着：", ""),
             distanceText: "",
             durationText: "",
@@ -859,17 +915,17 @@ export default function GoogleMap({
       legs.forEach((leg, index) => {
         // routeInfo.waypoints の順番に従ってspotを取得
         let spot: Spot | null = null;
-        if (index < routeInfo.waypoints.length) {
-          const waypoint = routeInfo.waypoints[index];
+        if (index < currentRouteInfo.waypoints.length) {
+          const waypoint = currentRouteInfo.waypoints[index];
           // spotIdでspotを検索（AfterではspotId必須）
-          spot = resolveSpotByWaypoint(waypoint);
+          spot = resolveSpotByWaypoint(waypoint, currentRoutePlan);
           if (!spot && waypoint.spotId) {
-            console.warn("[GoogleMap] buildRouteLegs: spotId not found in validSpots", {
+            console.log("[GoogleMap] route mismatch: spotId not found in buildRouteLegs", {
               waypointIndex: index,
               spotId: waypoint.spotId,
               waypointCoords: { lat: waypoint.lat, lng: waypoint.lng },
               validSpotsIds: validSpots.map(s => s.id),
-              validSpotsNames: validSpots.map(s => s.name),
+              planSpotIds: currentRoutePlan?.spots?.map(s => s.id) || [],
             });
             // 保険として座標近傍検索（After正常系では使わない）
             spot = validSpots.find((s) => 
@@ -883,10 +939,10 @@ export default function GoogleMap({
         let fromName: string;
         if (index === 0) {
           fromName = originName.replace("出発：", "");
-        } else if (index > 0 && index <= routeInfo.waypoints.length) {
+        } else if (index > 0 && index <= currentRouteInfo.waypoints.length) {
           // 前のwaypointのspotIdでspotを取得
-          const prevWaypoint = routeInfo.waypoints[index - 1];
-          const prevSpot = resolveSpotByWaypoint(prevWaypoint);
+          const prevWaypoint = currentRouteInfo.waypoints[index - 1];
+          const prevSpot = resolveSpotByWaypoint(prevWaypoint, currentRoutePlan);
           fromName = prevSpot?.name ?? originName.replace("出発：", "");
         } else {
           fromName = originName.replace("出発：", "");
@@ -905,7 +961,7 @@ export default function GoogleMap({
         // 最初のleg（origin → spot[0]）は index 1
         // 中間のlegs（spot[i-1] → spot[i]）は index i+1
         // 最後のleg（spot[last] → destination）は index validSpots.length+1
-        const displayIndex = isLastLeg ? validSpots.length + 1 : index + 1;
+        const displayIndex = isLastLeg ? currentRouteInfo.waypoints.length + 1 : index + 1;
 
         routeLegs.push({
           index: displayIndex,
@@ -1076,7 +1132,7 @@ export default function GoogleMap({
       // エラー時も RouteList を表示（useEffect で自動表示される）
       logFailure();
     });
-  }, [showRoute, koyoOrigin, origin, center, routeInfo]);
+  }, [showRoute, koyoOrigin, origin, center, validateRouteState]);
 
   // マップの中心を更新
   useEffect(() => {
@@ -1085,20 +1141,15 @@ export default function GoogleMap({
     }
   }, [center, isLoading]);
 
-  // Phase2-1: Directions APIでルートを描画（routeInfo基準に変更）
-  // spotsが空でも、routeInfoがあれば直行ルートを描画
+  // Phase2-2.5: Directions APIでルートを描画（routeVersion/routeReady基準に変更）
+  // routeVersion/routeReadyが更新されたら、drawRoute内部でrouteReady/routeInfo/validateをガード
   useEffect(() => {
-    if (!isLoading && showRoute && routeInfo && routeInfo.origin && routeInfo.destination && koyoOrigin) {
-      drawRoute(spots || []);
+    if (!isLoading && showRoute && koyoOrigin) {
+      // drawRoute実行時に1回だけstateを読み取る
+      const currentState = useSpotStore.getState();
+      drawRoute(currentState.spots || []);
     }
-  }, [routeInfo, showRoute, isLoading, drawRoute, koyoOrigin, spots]);
-
-  // originが更新されたらルートを再描画（routeInfo基準）
-  useEffect(() => {
-    if (!isLoading && showRoute && routeInfo && routeInfo.origin && routeInfo.destination) {
-      drawRoute(spots || []);
-    }
-  }, [origin, isLoading, showRoute, routeInfo, spots, drawRoute]);
+  }, [routeVersion, routeReady, showRoute, isLoading, drawRoute, koyoOrigin]);
 
   // マーカーの更新（routePointsベース）
   useEffect(() => {

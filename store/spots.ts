@@ -75,6 +75,15 @@ type SpotStore = {
   optionalSpots: Spot[];
   setOptionalSpots: (spots: Spot[]) => void;
   clearOptionalSpots: () => void;
+  // Phase2-2.5: ルート関連stateの一括更新
+  routeReady: boolean;
+  routeVersion: number;
+  applyRouteUpdate: (payload: {
+    routePlan?: RoutePlan | null;
+    routeInfo?: RouteInfo | null;
+    spots?: Spot[];
+    optionalSpots?: Spot[];
+  }) => void;
 };
 
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -141,5 +150,49 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   optionalSpots: [],
   setOptionalSpots: (optionalSpots) => set({ optionalSpots }),
   clearOptionalSpots: () => set({ optionalSpots: [] }),
+  // Phase2-2.5: ルート関連stateの一括更新
+  routeReady: false,
+  routeVersion: 0,
+  applyRouteUpdate: (payload) => {
+    const current = get();
+    const newVersion = current.routeVersion + 1;
+    const updates: Partial<SpotStore> = {
+      routeVersion: newVersion,
+    };
+    
+    // routePlan: null=クリア、undefined=保持
+    if ('routePlan' in payload) {
+      updates.routePlan = payload.routePlan;
+    }
+    
+    // routeInfo: null=クリア（routeReady=false）、undefined=保持、存在する場合はrouteReady=true
+    if ('routeInfo' in payload) {
+      updates.routeInfo = payload.routeInfo;
+      updates.routeReady = payload.routeInfo !== null;
+    }
+    
+    // spots: undefined=保持、[]は空に更新
+    if ('spots' in payload) {
+      updates.spots = payload.spots;
+    }
+    
+    // optionalSpots: undefined=保持、[]は空に更新
+    if ('optionalSpots' in payload) {
+      updates.optionalSpots = payload.optionalSpots;
+    }
+    
+    console.log("[applyRouteUpdate] Called", {
+      routeVersion: `${current.routeVersion} → ${newVersion}`,
+      payload: {
+        routePlan: payload.routePlan ? `planId: ${payload.routePlan.planId}` : payload.routePlan,
+        routeInfo: payload.routeInfo ? `waypoints: ${payload.routeInfo.waypoints?.length || 0}` : payload.routeInfo,
+        spots: payload.spots ? `count: ${payload.spots.length}` : payload.spots,
+        optionalSpots: payload.optionalSpots ? `count: ${payload.optionalSpots.length}` : payload.optionalSpots,
+      },
+      routeReady: updates.routeReady !== undefined ? updates.routeReady : current.routeReady,
+    });
+    
+    set(updates);
+  },
 }));
 

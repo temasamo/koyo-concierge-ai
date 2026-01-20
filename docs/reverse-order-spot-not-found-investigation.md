@@ -55,3 +55,4 @@
 1. デバッグログを確認して、`routeInfo.waypoints`と`validSpots`の内容を確認
 2. 問題が特定できたら、適切な修正を実施
 
+

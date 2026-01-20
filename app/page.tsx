@@ -54,6 +54,8 @@ export default function Page() {
   // Phase2-2: 候補スポット管理
   const setOptionalSpots = useSpotStore((s) => s.setOptionalSpots);
   const optionalSpots = useSpotStore((s) => s.optionalSpots);
+  // Phase2-2.5: ルート関連stateの一括更新
+  const applyRouteUpdate = useSpotStore((s) => s.applyRouteUpdate);
 
   // モードが変わったときに、そのモードの会話履歴が空なら初期メッセージを設定
   const prevModeRef = useRef<KoyoMode>(mode);
@@ -125,16 +127,25 @@ export default function Page() {
       const apiEndpoint = `/api/koyo/${mode}`;
       
       // payload構築直前に最新の状態を取得
+      const store = useSpotStore.getState();
       const requestBody = {
         messages: latestMessages,
         userState: {
           origin: params.userState.origin,
           destination: mode === "after" ? params.userState.destination : undefined,
           originInputMode: params.userState.originInputMode,
+          // Afterモードの場合、ルート状態をuserStateに追加
+          // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
+          ...(mode === "after"
+            ? {
+                routePlanId: store.routePlan?.planId ?? null,
+                spots: (store.routePlan?.spots as Spot[]) || store.spots || [],
+                routeInfo: store.routeInfo ?? null,
+              }
+            : {}),
           ...(mode === "after"
             ? (() => {
                 // payload構築直前に最新の状態を取得
-                const store = useSpotStore.getState();
                 const currentSpots = store.spots; // 確定済み経由地（最新の値を取得）
                 const currentRouteInfo = store.routeInfo;
                 const currentOptionalSpots = store.optionalSpots;
@@ -223,48 +234,39 @@ export default function Page() {
         clearDestination();
       }
       
-      // Phase2-2: レスポンス適用（状態更新ルール厳守）
-      // 順番：1. setRouteInfo（唯一経路、先に更新） 2. setRoutePlan（spotsも自動更新される） 3. setOptionalSpots（候補更新）
+      // Phase2-2.5: レスポンス適用をapplyRouteUpdateに統一
       if (mode === "after" && data.phase === "after:phase2_2_done") {
         console.log("[page.tsx] sendMessageWithUserState Phase2-2: Processing phase2_2_done response");
         
-        // 1. routeInfo の更新（唯一経路、先に更新）
-        if (data.routeInfo) {
-          setRouteInfo(data.routeInfo);
-          console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set routeInfo (waypoints:", data.routeInfo.waypoints?.length || 0, ")");
-        }
-        
-        // 2. RoutePlan の更新（routeInfo更新後に実行、spotsも自動更新される）
-        if (data.routePlan) {
-          setRoutePlan(data.routePlan);
-          console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set routePlan:", data.routePlan.planId);
-        }
-        
-        // 3. optionalSpots の更新（候補更新があれば）
-        if (data.optionalSpots && Array.isArray(data.optionalSpots)) {
-          setOptionalSpots(data.optionalSpots);
-          console.log("[page.tsx] sendMessageWithUserState Phase2-2: Set optionalSpots:", data.optionalSpots.length);
-        }
-        
-        // spots（確定経由地）の更新は不要（setRoutePlanで自動更新される）
+        // Phase2-2（確定/順番入替/削除）: spots + routePlan + routeInfo を同一 applyRouteUpdate で同時更新
+        applyRouteUpdate({
+          routeInfo: data.routeInfo || null,
+          routePlan: data.routePlan || null,
+          spots: data.routePlan?.spots as Spot[] | undefined,
+          optionalSpots: data.optionalSpots && Array.isArray(data.optionalSpots) ? data.optionalSpots : undefined,
+        });
+        console.log("[page.tsx] sendMessageWithUserState Phase2-2: Applied route update via applyRouteUpdate");
       } else {
-        // Phase2-1 または通常の処理
-        // routeInfo の扱い
-        if (data.routeInfo) {
-          setRouteInfo(data.routeInfo);
-        } else {
-          clearRouteInfo();
-        }
-
-        // Phase2-2: optionalSpots の扱い（Afterモードのみ）
+        // Phase2-1（候補提示）: routeInfo を触らず optionalSpots中心
         if (mode === "after") {
-          if (data.optionalSpots && Array.isArray(data.optionalSpots)) {
-            setOptionalSpots(data.optionalSpots);
-            console.log("[page.tsx] sendMessageWithUserState: Set optionalSpots:", data.optionalSpots.length);
-          }
+          applyRouteUpdate({
+            optionalSpots: data.optionalSpots && Array.isArray(data.optionalSpots) ? data.optionalSpots : undefined,
+          });
+          console.log("[page.tsx] sendMessageWithUserState Phase2-1: Applied optionalSpots update");
         }
 
-        // RoutePlan の更新
+        // Phase2-1 または通常の処理: routeInfo の扱い
+        if (data.routeInfo) {
+          applyRouteUpdate({
+            routeInfo: data.routeInfo,
+          });
+        } else {
+          applyRouteUpdate({
+            routeInfo: null,
+          });
+        }
+
+        // RoutePlan の更新（Phase2-1）
         if (data.spots && Array.isArray(data.spots) && data.spots.length > 0 && data.routeInfo) {
           const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           const modeUpper = mode.toUpperCase() as "BEFORE" | "STAY" | "AFTER";
@@ -277,7 +279,10 @@ export default function Page() {
             constraints: {},
             bCallCount: 0,
           };
-          setRoutePlan(newRoutePlan);
+          applyRouteUpdate({
+            routePlan: newRoutePlan,
+            spots: data.spots,
+          });
         }
       }
       
@@ -327,6 +332,12 @@ export default function Page() {
       ];
 
       // ③ ルート編集の意図を判定（簡易キーワードベース）
+      const userText = inputMessage.trim();
+      const isReverseCommand =
+        userText === "順番を逆に" ||
+        userText === "順番を逆" ||
+        userText.includes("順番を逆に");
+      
       const isRouteEditIntent = (() => {
         if (!routePlan) return false; // routePlanが存在しない場合は編集不可
         const normalized = inputMessage.toLowerCase();
@@ -338,22 +349,26 @@ export default function Page() {
         return editKeywords.some(kw => normalized.includes(kw));
       })();
 
-      // ④ エンドポイントを決定
-      const apiEndpoint = isRouteEditIntent
-        ? `/api/koyo/${mode}/edit`
-        : `/api/koyo/${mode}`;
+      // ④ エンドポイントを決定（「順番を逆に」は常に通常エンドポイント）
+      const apiEndpoint = isReverseCommand
+        ? `/api/koyo/${mode}` // ★after/editに行かない
+        : isRouteEditIntent
+          ? `/api/koyo/${mode}/edit`
+          : `/api/koyo/${mode}`;
 
       // ⑤ API コール
       // リクエスト送信時に最新の origin と destination を取得
       const currentOrigin = useSpotStore.getState().origin;
       const currentDestination = useSpotStore.getState().destination;
       const currentRoutePlan = useSpotStore.getState().routePlan;
+      const store = useSpotStore.getState();
       console.log("[page.tsx] Sending request with origin:", currentOrigin);
       console.log("[page.tsx] Sending request with destination:", currentDestination);
       console.log("[page.tsx] Is route edit intent?", isRouteEditIntent);
+      console.log("[page.tsx] Is reverse command?", isReverseCommand);
       console.log("[page.tsx] Current routePlan:", currentRoutePlan?.planId);
       
-      const requestBody = isRouteEditIntent && currentRoutePlan
+      const requestBody = isRouteEditIntent && currentRoutePlan && !isReverseCommand
         ? {
             routePlan: currentRoutePlan,
             userMessage: inputMessage,
@@ -364,10 +379,18 @@ export default function Page() {
               origin: currentOrigin,
               destination: mode === "after" ? currentDestination : undefined,
               originInputMode: originInputMode,
+              // Afterモードの場合、ルート状態をuserStateに追加
+              // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
+              ...(mode === "after"
+                ? {
+                    routePlanId: store.routePlan?.planId ?? null,
+                    spots: (store.routePlan?.spots as Spot[]) || store.spots || [],
+                    routeInfo: store.routeInfo ?? null,
+                  }
+                : {}),
               ...(mode === "after"
                 ? (() => {
                     // payload構築直前に最新の状態を取得
-                    const store = useSpotStore.getState();
                     const currentSpots = store.spots; // 確定済み経由地（最新の値を取得）
                     const currentRouteInfo = store.routeInfo;
                     const currentOptionalSpots = store.optionalSpots;
@@ -538,54 +561,46 @@ export default function Page() {
         clearDestination();
       }
 
-      // Phase2-2: レスポンス適用（状態更新ルール厳守）
-      // 順番：1. setRouteInfo（唯一経路、先に更新） 2. setRoutePlan（spotsも自動更新される） 3. setOptionalSpots（候補更新）
+      // Phase2-2.5: レスポンス適用をapplyRouteUpdateに統一
       if (mode === "after" && data.phase === "after:phase2_2_done") {
         console.log("[page.tsx] Phase2-2: Processing phase2_2_done response");
         
-        // 1. routeInfo の更新（唯一経路、先に更新）
-        if (data.routeInfo) {
-          setRouteInfo(data.routeInfo);
-          console.log("[page.tsx] Phase2-2: Set routeInfo (waypoints:", data.routeInfo.waypoints?.length || 0, ")");
-        }
-        
-        // 2. RoutePlan の更新（routeInfo更新後に実行、spotsも自動更新される）
-        if (data.routePlan) {
-          setRoutePlan(data.routePlan);
-          console.log("[page.tsx] Phase2-2: Set routePlan:", data.routePlan.planId, "spots:", data.routePlan.spots.length);
-        }
-        
-        // 3. optionalSpots の更新（候補更新があれば）
-        if (data.optionalSpots && Array.isArray(data.optionalSpots)) {
-          setOptionalSpots(data.optionalSpots);
-          console.log("[page.tsx] Phase2-2: Set optionalSpots:", data.optionalSpots.length);
-        }
-        
-        // spots（確定経由地）の更新は不要（setRoutePlanで自動更新される）
+        // Phase2-2（確定/順番入替/削除）: spots + routePlan + routeInfo を同一 applyRouteUpdate で同時更新
+        applyRouteUpdate({
+          routeInfo: data.routeInfo || null,
+          routePlan: data.routePlan || null,
+          spots: data.routePlan?.spots as Spot[] | undefined,
+          optionalSpots: data.optionalSpots && Array.isArray(data.optionalSpots) ? data.optionalSpots : undefined,
+        });
+        console.log("[page.tsx] Phase2-2: Applied route update via applyRouteUpdate");
       } else {
-        // Phase2-1 または通常の処理
-        // 🔽 routeInfo の扱い
-        if (data.routeInfo) {
-          setRouteInfo(data.routeInfo);
-          console.log("[page.tsx] Set routeInfo:", data.routeInfo);
-        } else {
-          clearRouteInfo();
-          console.log("[page.tsx] Clear routeInfo");
-        }
-
-        // Phase2-2: optionalSpots の扱い（Afterモードのみ）
+        // Phase2-1（候補提示）: routeInfo を触らず optionalSpots中心
         if (mode === "after") {
-          if (data.optionalSpots && Array.isArray(data.optionalSpots)) {
-            setOptionalSpots(data.optionalSpots);
-            console.log("[page.tsx] Set optionalSpots:", data.optionalSpots.length);
-          }
+          applyRouteUpdate({
+            optionalSpots: data.optionalSpots && Array.isArray(data.optionalSpots) ? data.optionalSpots : undefined,
+          });
+          console.log("[page.tsx] Phase2-1: Applied optionalSpots update");
         }
 
-        // 🔽 RoutePlan の更新
+        // Phase2-1 または通常の処理: routeInfo の扱い
+        if (data.routeInfo) {
+          applyRouteUpdate({
+            routeInfo: data.routeInfo,
+          });
+        } else {
+          applyRouteUpdate({
+            routeInfo: null,
+          });
+        }
+
+        // RoutePlan の更新（Phase2-1）
         if (isRouteEditIntent && data.routePlan) {
           // 編集エンドポイントからのレスポンス: routePlanを更新
-          setRoutePlan(data.routePlan);
-          console.log("[page.tsx] Updated RoutePlan from edit:", data.routePlan.planId);
+          applyRouteUpdate({
+            routePlan: data.routePlan,
+            spots: data.routePlan.spots as Spot[],
+          });
+          console.log("[page.tsx] Updated RoutePlan from edit via applyRouteUpdate:", data.routePlan.planId);
         } else if (!isRouteEditIntent && data.spots && Array.isArray(data.spots) && data.spots.length > 0 && data.routeInfo) {
           // 初期生成: 新しいRoutePlanを作成
           const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -620,12 +635,17 @@ export default function Page() {
             bCallCount: 0, // 初期生成時は0
           };
           
-          setRoutePlan(routePlan);
-          console.log("[page.tsx] Created and saved RoutePlan:", routePlan.planId, "with", routePlan.spots.length, "spots");
+          applyRouteUpdate({
+            routePlan,
+            spots: data.spots,
+          });
+          console.log("[page.tsx] Created and saved RoutePlan via applyRouteUpdate:", routePlan.planId, "with", routePlan.spots.length, "spots");
         } else if (!isRouteEditIntent) {
           // spots または routeInfo が存在しない場合は RoutePlan をクリア
-          clearRoutePlan();
-          console.log("[page.tsx] Cleared RoutePlan (no spots or routeInfo)");
+          applyRouteUpdate({
+            routePlan: null,
+          });
+          console.log("[page.tsx] Cleared RoutePlan via applyRouteUpdate (no spots or routeInfo)");
         }
       }
 

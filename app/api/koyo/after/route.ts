@@ -730,6 +730,172 @@ export async function POST(req: NextRequest) {
     const userState = body.userState || {};
     let currentDestination: OriginInfo = userState.destination || DEFAULT_DESTINATION;
 
+    // 「順番を逆に」コマンドの検出（LLM呼び出し前にショートサーキット）
+    const normalizedUserMessage = userMessage.trim().toLowerCase();
+    const isReverseCommand =
+      normalizedUserMessage === "順番を逆に" ||
+      normalizedUserMessage === "順番を逆" ||
+      normalizedUserMessage.includes("順番を逆に");
+
+    if (isReverseCommand) {
+      console.log("[koyo-after] 🔄 REVERSE COMMAND detected - Short-circuiting LLM call");
+      
+      // 逆順用の元データ取得（優先順位: userState > context.after）
+      const sourceRouteInfo = userState.routeInfo || userState.context?.after?.routeInfo;
+      // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
+      // userStateにroutePlanが含まれている場合は、そのspotsを使用
+      const sourceRoutePlan = (body as any).routePlan;
+      const sourceSpots = sourceRoutePlan?.spots || userState.spots || userState.context?.after?.spots;
+      const sourceRoutePlanId = userState.routePlanId || sourceRoutePlan?.planId;
+      const sourceOptionalSpots = userState.context?.after?.optionalSpots;
+      
+      console.log("[koyo-after] Reverse command - Source data:", {
+        hasUserStateRouteInfo: !!userState.routeInfo,
+        hasUserStateSpots: !!userState.spots,
+        hasContextAfterRouteInfo: !!userState.context?.after?.routeInfo,
+        hasContextAfterSpots: !!userState.context?.after?.spots,
+        hasRoutePlan: !!sourceRoutePlan,
+        sourceSpotsCount: sourceSpots?.length || 0,
+        sourceRouteInfoWaypointsCount: sourceRouteInfo?.waypoints?.length || 0,
+        sourceRoutePlanSpotsCount: sourceRoutePlan?.spots?.length || 0,
+      });
+
+      // ガード: routeInfoまたはspotsが無い場合はNOOP返信
+      if (!sourceRouteInfo || !sourceSpots || sourceSpots.length === 0) {
+        console.log("[koyo-after] Reverse command - NOOP: No routeInfo or spots");
+        return NextResponse.json({
+          phase: "after:phase2_2_done",
+          reply: "順番を逆にするルートがまだありません。先に経由地を追加してください。",
+          routePlan: userState.context?.after ? undefined : null,
+          routeInfo: sourceRouteInfo || null,
+          spots: sourceSpots || [],
+          optionalSpots: sourceOptionalSpots,
+        });
+      }
+
+      // ガード: spotsが1件以下の場合はNOOP返信
+      if (sourceSpots.length <= 1) {
+        console.log("[koyo-after] Reverse command - NOOP: spots.length <= 1");
+        return NextResponse.json({
+          phase: "after:phase2_2_done",
+          reply: "経由地が1件以下のため、順番は変更されませんでした。",
+          routePlan: userState.context?.after ? undefined : null,
+          routeInfo: sourceRouteInfo,
+          spots: sourceSpots,
+          optionalSpots: sourceOptionalSpots,
+        });
+      }
+
+      // 逆順処理（routeInfo.waypointsを基準にspotsを再構築）
+      // 重要: routeInfo.waypointsとspotsの整合性を保つため、waypointsからspotIdを使ってspotsを再構築
+      const reversedWaypoints = [...(sourceRouteInfo.waypoints || [])].reverse();
+      
+      // waypointsからspotIdを使ってspotsを再構築（Places API由来のスポットも含める）
+      const waypointSpotMap = new Map<string, Spot>();
+      // まずsourceSpotsからマップを作成
+      sourceSpots.forEach((spot) => {
+        waypointSpotMap.set(spot.id, spot);
+      });
+      
+      // reversedWaypointsの順序でspotsを再構築
+      const reversedSpots: Spot[] = [];
+      for (const waypoint of reversedWaypoints) {
+        if (waypoint.spotId) {
+          const spot = waypointSpotMap.get(waypoint.spotId);
+          if (spot) {
+            reversedSpots.push(spot);
+          } else {
+            // waypointsにspotIdがあるがspotsに存在しない場合（Places API由来など）
+            // waypointの座標から最小限のSpotオブジェクトを作成
+            console.warn("[koyo-after] Reverse command - spot not found in sourceSpots, creating from waypoint:", waypoint.spotId);
+            reversedSpots.push({
+              id: waypoint.spotId,
+              name: `スポット${reversedSpots.length + 1}`,
+              lat: waypoint.lat,
+              lng: waypoint.lng,
+              category: null,
+              city: null,
+              season: null,
+              drive_time: null,
+              walk_time: null,
+              stay_time: null,
+              url: null,
+              tags: null,
+              drive_minutes: null,
+            } as Spot);
+          }
+        }
+      }
+      
+      // ガード: reversedSpotsの件数がwaypointsと一致しない場合は警告
+      if (reversedSpots.length !== reversedWaypoints.length) {
+        console.warn("[koyo-after] Reverse command - spots count mismatch:", {
+          reversedSpotsCount: reversedSpots.length,
+          reversedWaypointsCount: reversedWaypoints.length,
+          sourceSpotsCount: sourceSpots.length,
+          sourceWaypointsCount: sourceRouteInfo.waypoints?.length || 0,
+        });
+      }
+
+      // routeInfoを更新
+      const reversedRouteInfo = {
+        ...sourceRouteInfo,
+        waypoints: reversedWaypoints,
+      };
+
+      // routePlanを更新（planId維持）
+      let reversedRoutePlan = null;
+      if (sourceRoutePlanId) {
+        // 既存のroutePlanを更新（planId維持）
+        reversedRoutePlan = {
+          planId: sourceRoutePlanId,
+          mode: "AFTER" as const,
+          origin: sourceRouteInfo.origin,
+          destination: sourceRouteInfo.destination,
+          spots: reversedSpots.map((s) => ({
+            id: s.id,
+            name: s.name,
+            lat: s.lat,
+            lng: s.lng,
+            category: s.category,
+            city: s.city,
+            season: s.season,
+            drive_time: s.drive_time,
+            walk_time: s.walk_time,
+            stay_time: s.stay_time,
+            url: s.url,
+            tags: s.tags,
+            drive_minutes: s.drive_minutes,
+            stayMinutes: s.stayMinutes || (s.stay_time ? parseInt(s.stay_time.match(/\d+/)?.[0] || "0") : null),
+            source: (s as any).source || "db",
+          })),
+          constraints: {},
+          bCallCount: 0,
+        };
+      }
+
+      const reversedSpotList = reversedSpots
+        .map((s, idx) => `(${idx + 1}) ${s.name}`)
+        .join("、");
+
+      console.log("[koyo-after] Reverse command - Success:", {
+        originalSpotsCount: sourceSpots.length,
+        reversedSpotsCount: reversedSpots.length,
+        originalWaypointsCount: sourceRouteInfo.waypoints?.length || 0,
+        reversedWaypointsCount: reversedWaypoints.length,
+        routePlanId: sourceRoutePlanId,
+      });
+
+      return NextResponse.json({
+        phase: "after:phase2_2_done",
+        reply: `了解です。順番を逆にして、${reversedSpotList}の順でルートを更新しました。`,
+        routePlan: reversedRoutePlan,
+        routeInfo: reversedRouteInfo,
+        spots: reversedSpots,
+        optionalSpots: sourceOptionalSpots, // optionalSpotsはそのまま返す
+      });
+    }
+
     // 分岐トレースログ：入力情報
     const normalizedMessage = userMessage.trim().toUpperCase();
     console.log("[koyo-after] 🔍 BRANCH TRACE - Input:", {
@@ -760,95 +926,6 @@ export async function POST(req: NextRequest) {
 
     // Phase2-2: 候補選択処理（context.after が存在する場合）
     const afterContext = userState.context?.after;
-    
-    // 「順番を逆に」の処理（確定済み経由地の順番変更）
-    // 条件: phaseが"after:phase2_2_done"またはspotsが存在する場合
-    if (afterContext && (afterContext.phase === "after:phase2_2_done" || (afterContext.spots && Array.isArray(afterContext.spots) && afterContext.spots.length > 0))) {
-      const normalizedMessage = userMessage.trim().toLowerCase();
-      const isReverseOrder = normalizedMessage.includes("順番を逆に") || normalizedMessage.includes("順番逆") || normalizedMessage.includes("逆順");
-      
-      console.log("[koyo-after] Phase2-2: Reverse order check:", {
-        phase: afterContext.phase,
-        spotsCount: afterContext.spots?.length || 0,
-        isReverseOrder,
-        normalizedMessage,
-        hasSpots: !!afterContext.spots,
-      });
-      
-      if (isReverseOrder && afterContext.spots && Array.isArray(afterContext.spots) && afterContext.spots.length > 0) {
-        const currentSpots = afterContext.spots;
-        if (currentSpots.length >= 2) {
-          // 経由地の順番を逆にする
-          const reversedSpots = [...currentSpots].reverse();
-          const reversedWaypoints = reversedSpots.map(s => ({
-            lat: s.lat!,
-            lng: s.lng!,
-            spotId: s.id,
-          }));
-          
-          // routeInfo を構築
-          let routeOrigin: { lat: number; lng: number } = afterContext.origin || { ...KOYO_COORDINATES };
-          let routeDestination: { lat: number; lng: number } = afterContext.destination || { ...KOYO_COORDINATES };
-          
-          if (hasDestination && currentDestination) {
-            if (currentDestination.type === "pref-boundary" && currentDestination.pref) {
-              const prefBoundary = getPrefBoundary(currentDestination.pref);
-              if (prefBoundary) {
-                routeDestination = prefBoundary;
-              }
-            } else if (currentDestination.lat && currentDestination.lng) {
-              routeDestination = {
-                lat: currentDestination.lat,
-                lng: currentDestination.lng,
-              };
-            }
-          }
-          
-          const reversedSpotList = reversedSpots
-            .map((s, idx) => {
-              // optionalSpotsから元のインデックスを取得
-              const originalIndex = afterContext.optionalSpots?.findIndex(opt => opt.id === s.id) ?? idx;
-              const displayNumber = originalIndex !== -1 ? originalIndex + 1 : idx + 1;
-              return `(${displayNumber}) ${s.name}`;
-            })
-            .join("、");
-          
-          // routePlan を構築（setRoutePlan用）
-          const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          const routePlan = {
-            planId,
-            mode: "AFTER" as const,
-            origin: routeOrigin,
-            destination: routeDestination,
-            spots: reversedSpots,
-            constraints: {},
-            bCallCount: 0,
-          };
-          
-          return NextResponse.json({
-            reply: `了解です。順番を逆にして、${reversedSpotList}の順でルートを更新しました。`,
-            phase: "after:phase2_2_done",
-            spots: reversedSpots, // 順番を逆にした経由地
-            optionalSpots: afterContext.optionalSpots || [], // 候補は残す
-            routeInfo: {
-              origin: routeOrigin,
-              waypoints: reversedWaypoints,
-              destination: routeDestination,
-            },
-            routePlan, // routePlanも更新
-            destination: hasDestination ? currentDestination : undefined,
-            debug: { branch: "after:phase2_2_reverse_order", phase: "after:phase2_2_done" },
-          });
-        } else {
-          return NextResponse.json({
-            reply: "経由地が1件のため、順番を変更できません。",
-            destination: hasDestination ? currentDestination : undefined,
-            optionalSpots: afterContext.optionalSpots || [],
-            debug: { branch: "after:phase2_2_reverse_order_error" },
-          });
-        }
-      }
-    }
     
     // 候補選択処理（optionalSpots が存在する場合）
     if (afterContext?.optionalSpots && Array.isArray(afterContext.optionalSpots) && afterContext.optionalSpots.length > 0) {

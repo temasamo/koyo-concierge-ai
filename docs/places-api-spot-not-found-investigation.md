@@ -152,3 +152,4 @@ const validSpots = (routeSpots || []).filter(
 2. Places API由来のスポットのIDが一致しているか確認
 3. 問題が特定できたら、適切な修正を実施
 
+
