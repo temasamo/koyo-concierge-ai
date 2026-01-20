@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { loadGoogleMaps } from "./MapLoader";
-import type { Spot, OriginInfo } from "@/store/spots";
+import type { Spot, OriginInfo, RouteInfo } from "@/store/spots";
 import { useSpotStore } from "@/store/spots";
 import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
 import { getDefaultEntryPoint } from "@/app/api/koyo/before/_constants/prefEntryPoints";
