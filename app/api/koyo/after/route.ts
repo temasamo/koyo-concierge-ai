@@ -673,13 +673,36 @@ type AfterContext = {
   optionalSpots?: Spot[]; // Phase2-1で保持した候補
   spots?: Spot[]; // Phase2-2で確定した経由地（順番変更用）
   routeInfoKey?: "direct"; // 直行ルートを意味するフラグ
+  routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number; spotId?: string }>; destination: { lat: number; lng: number } } | null; // 後方互換性のため追加
   origin?: { lat: number; lng: number };
   destination?: { lat: number; lng: number };
 };
 
 type AfterRequestBody =
-  | { messages: ChatCompletionMessageParam[]; userState?: { destination?: OriginInfo; context?: { after?: AfterContext } } }
-  | { query: string; userState?: { destination?: OriginInfo; context?: { after?: AfterContext } } };
+  | { 
+      messages: ChatCompletionMessageParam[]; 
+      userState?: { 
+        destination?: OriginInfo; 
+        origin?: OriginInfo;
+        originInputMode?: "free" | "current_location" | undefined;
+        routePlanId?: string | null;
+        spots?: Spot[];
+        routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number; spotId?: string }>; destination: { lat: number; lng: number } } | null;
+        context?: { after?: AfterContext } 
+      } 
+    }
+  | { 
+      query: string; 
+      userState?: { 
+        destination?: OriginInfo; 
+        origin?: OriginInfo;
+        originInputMode?: "free" | "current_location" | undefined;
+        routePlanId?: string | null;
+        spots?: Spot[];
+        routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number; spotId?: string }>; destination: { lat: number; lng: number } } | null;
+        context?: { after?: AfterContext } 
+      } 
+    };
 
 // デフォルトの destination 値
 const DEFAULT_DESTINATION: OriginInfo = {
@@ -793,7 +816,7 @@ export async function POST(req: NextRequest) {
       // waypointsからspotIdを使ってspotsを再構築（Places API由来のスポットも含める）
       const waypointSpotMap = new Map<string, Spot>();
       // まずsourceSpotsからマップを作成
-      sourceSpots.forEach((spot) => {
+      (sourceSpots as Spot[]).forEach((spot: Spot) => {
         waypointSpotMap.set(spot.id, spot);
       });
       
