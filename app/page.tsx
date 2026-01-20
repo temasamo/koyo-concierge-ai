@@ -6,7 +6,7 @@ import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
 import ChatInput from "./koyo-lab-ui/ChatInput";
 import { useKoyoMode, KoyoMode } from "./koyo-lab-ui/hooks/useKoyoMode";
-import { useSpotStore, type OriginInfo } from "@/store/spots";
+import { useSpotStore, type OriginInfo, type Spot } from "@/store/spots";
 import { useMessageStore } from "@/store/messages";
 import type { Msg } from "@/store/messages";
 import type { RoutePlan } from "@/types/route";
