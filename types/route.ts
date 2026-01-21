@@ -34,11 +34,23 @@ export type KoyoMode = "before" | "stay" | "after";
 // StopType: 途中立ち寄りスポットの種類（将来拡張用）
 // meal/shopping: 旧（後方互換）
 // lunch/shop: 新（フェーズ1.5以降の正式）
-export type StopType = "meal" | "lunch" | "cafe" | "rest" | "onsen" | "shopping" | "shop";
+export type StopType =
+  | "meal"
+  | "lunch"
+  | "cafe"
+  | "rest"
+  | "onsen"
+  | "shopping"
+  | "shop"
+  | "sightseeing";
+
+export type SightseeingSubType = "history" | "nature" | "play" | "festival" | null;
 
 // StopIntent: 途中立ち寄りスポットの検出結果
 export type StopIntent = {
   type: StopType;
+  // sightseeing専用（歴史/自然/遊ぶ/祭り）。観光したい等でsubTypeが特定できない場合はnull。
+  subType?: SightseeingSubType;
   foodCategory?: string; // lunch専用（例: "ラーメン", "芋煮"）- ユーザー意図
   fallbackKeyword: string; // Places APIフォールバック用（例: "ランチ", "カフェ"）
   // 旧仕様（使用禁止・互換用）

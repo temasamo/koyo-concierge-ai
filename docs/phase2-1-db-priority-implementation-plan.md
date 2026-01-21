@@ -374,3 +374,4 @@ console.log("[koyo-stay] After integratePlaces:", {
 - **デフォルト**: `dbCount >= 3`の場合はPlaces APIを呼ばない
 - **ログ出力**: 各モードで統一フォーマットのログを追加
 
+

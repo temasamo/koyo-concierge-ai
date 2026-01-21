@@ -247,3 +247,4 @@ if (data.routePlan) {
 - `buildRouteLegs`関数では、`routeInfo.waypoints`の順番をそのまま使用する
 
 
+

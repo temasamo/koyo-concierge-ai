@@ -1147,7 +1147,22 @@ export default function GoogleMap({
     if (!isLoading && showRoute && koyoOrigin) {
       // drawRoute実行時に1回だけstateを読み取る
       const currentState = useSpotStore.getState();
+      console.log("[GoogleMap] useEffect triggered, calling drawRoute:", {
+        routeVersion: currentState.routeVersion,
+        routeReady: currentState.routeReady,
+        hasRouteInfo: !!currentState.routeInfo,
+        routeInfoWaypoints: currentState.routeInfo?.waypoints?.length || 0,
+        spotsCount: currentState.spots?.length || 0,
+        showRoute,
+        isLoading,
+      });
       drawRoute(currentState.spots || []);
+    } else {
+      console.log("[GoogleMap] useEffect skipped:", {
+        isLoading,
+        showRoute,
+        koyoOrigin: !!koyoOrigin,
+      });
     }
   }, [routeVersion, routeReady, showRoute, isLoading, drawRoute, koyoOrigin]);
 
@@ -1481,7 +1496,10 @@ export default function GoogleMap({
           <div className="text-gray-600">地図を読み込み中...</div>
         </div>
       )}
-      {!isLoading && markers.length === 0 && (
+      {/* 直行ルート（routeInfoあり・waypoints空）でも spots が 0 のことがあるため、
+          markers.length===0 だけで空状態を出すと、ルート線/地図がオーバーレイに隠れる。
+          routeInfoがある（= ルート表示の材料がある）場合は空状態を出さない。 */}
+      {!isLoading && markers.length === 0 && !routeInfo && routePoints.length === 0 && (
         <div className="absolute inset-0 bg-gray-50 flex items-center justify-center z-10 pointer-events-none">
           <div className="text-gray-500 text-sm">スポットがありません</div>
         </div>

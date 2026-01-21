@@ -1,7 +1,7 @@
 // app/api/koyo/_utils/detectStopIntent.ts
 // 途中立ち寄り意図を検出する関数（汎用化）
 
-import type { StopIntent, StopType } from "@/types/route";
+import type { SightseeingSubType, StopIntent, StopType } from "@/types/route";
 
 /**
  * 途中立ち寄り意図を検出（StopIntent生成）- 汎用版
@@ -107,6 +107,59 @@ export function detectStopIntent(message: string): StopIntent | null {
         fallbackKeyword: config.fallbackKeyword,
       };
     }
+  }
+
+  // sightseeing（観光）: lunch等に当たらない場合のフォールバックとして最後に判定
+  // 例: 「歴史観光して帰りたい」「自然に寄って帰りたい」「祭りを見たい」「観光したい」「寄り道したい」
+  const sightseeingKeywords = [
+    "観光",
+    "寄り道",
+    "立ち寄り",
+    "史跡",
+    "寺",
+    "神社",
+    "城",
+    "文化財",
+    "歴史",
+    "自然",
+    "景色",
+    "渓谷",
+    "山",
+    "展望",
+    "公園",
+    "遊び",
+    "体験",
+    "アクティビティ",
+    "祭り",
+    "花笠",
+  ];
+  const hasSightseeing = sightseeingKeywords.some((k) => normalized.includes(k));
+  if (hasSightseeing) {
+    let subType: SightseeingSubType = null;
+    if (["歴史", "史跡", "寺", "神社", "城", "文化財"].some((k) => normalized.includes(k))) {
+      subType = "history";
+    } else if (["自然", "景色", "渓谷", "山", "展望", "公園"].some((k) => normalized.includes(k))) {
+      subType = "nature";
+    } else if (["遊び", "体験", "アクティビティ"].some((k) => normalized.includes(k))) {
+      subType = "play";
+    } else if (["祭り", "花笠"].some((k) => normalized.includes(k))) {
+      subType = "festival";
+    }
+
+    const keywordBySubType: Record<Exclude<SightseeingSubType, null>, string> = {
+      history: "歴史",
+      nature: "自然",
+      play: "遊ぶ",
+      festival: "祭り",
+    };
+
+    return {
+      type: "sightseeing",
+      subType,
+      // Places側のkeyword優先順位(foodCategory→keyword→fallbackKeyword)に乗せる
+      keyword: subType ? keywordBySubType[subType] : "観光",
+      fallbackKeyword: "観光",
+    };
   }
   
   return null;

@@ -136,6 +136,7 @@ const PLACE_TYPE_MAP: Record<StopType, string> = {
   onsen: "establishment", // spaは国・地域差が大きいためestablishmentを使用
   shop: "store",
   shopping: "store",      // 互換
+  sightseeing: "tourist_attraction",
 };
 
 /**
@@ -203,19 +204,23 @@ export async function searchPlaces(
       ),
     }));
 
-    // 評価4.0以上でフィルタ
-    const candidates = placesWithDistance.filter((p) => (p.rating ?? 0) >= 4.0);
+    // 評価4.0以上でフィルタ（ただし0件ならフォールバックで評価条件を外す）
+    let candidates = placesWithDistance.filter((p) => (p.rating ?? 0) >= 4.0);
 
     if (candidates.length === 0) {
-      console.warn("[koyo-places] No places with rating >= 4.0");
-      return null;
+      // 県境/郊外などで「4.0以上が0件」になりやすく、結果が空になると直行ルートしか返せなくなる。
+      // UX優先で「距離が近い順」のフォールバックを行う（評価が無い/低い場所も候補として採用）。
+      console.warn("[koyo-places] No places with rating >= 4.0; falling back to nearest result without rating filter");
+      candidates = placesWithDistance;
     }
 
-    // 評価が高い順、同等なら距離が近い順でソート
+    // ソート
+    // - 通常: 評価が高い順、同等なら距離が近い順
+    // - フォールバック: ratingがundefinedなこともあるので距離優先に寄せる（rating差がつかない）
     candidates.sort((a, b) => {
-      if (b.rating !== a.rating) {
-        return (b.rating ?? 0) - (a.rating ?? 0);
-      }
+      const ar = a.rating ?? 0;
+      const br = b.rating ?? 0;
+      if (br !== ar) return br - ar;
       return (a.distance ?? Infinity) - (b.distance ?? Infinity);
     });
 
@@ -294,18 +299,47 @@ export function convertPlaceToSpot(place: GooglePlace): {
  * @param stopIntent StopIntent（nullの場合は何もしない）
  * @param origin 出発地座標（spotsが空の場合に使用、オプショナル）
  * @param destination 目的地座標（spotsが空の場合に使用、オプショナル）
+ * @param options オプション
+ * @param options.minRequiredCount 最小必要件数（デフォルト: 3）
+ * @param options.forceCallPlaces 強制的にPlaces APIを呼ぶか（デフォルト: false）
+ * @param options.reason ログ用の理由（オプショナル）
  * @returns { spots: 統合後のspots配列, placesApiFailed: Places APIが失敗したか, placesAdded: Places APIでスポットが追加されたか }
  */
 export async function integratePlaces(
   spots: any[],
   stopIntent: StopIntent | null,
   origin?: { lat: number; lng: number },
-  destination?: { lat: number; lng: number }
+  destination?: { lat: number; lng: number },
+  options?: {
+    minRequiredCount?: number;
+    forceCallPlaces?: boolean;
+    reason?: string | null;
+  }
 ): Promise<{ spots: any[]; placesApiFailed: boolean; placesAdded: boolean }> {
+  const minRequiredCount = options?.minRequiredCount ?? 3;
+  const forceCallPlaces = options?.forceCallPlaces ?? false;
+  const reason = options?.reason ?? null;
+  
   // spotsが空でもstopIntentがあればPlaces APIを呼ぶ（DBスポットがなくてもPlacesで補完）
   const baseSpots = spots || [];
 
   if (!stopIntent) {
+    // DBスポットにsourceフィールドを追加
+    baseSpots.forEach((spot) => {
+      if (!spot.source) {
+        spot.source = "db";
+      }
+    });
+    return { spots: baseSpots, placesApiFailed: false, placesAdded: false };
+  }
+
+  // ゲート: forceCallPlacesがfalseでspots.length >= minRequiredCountの場合はPlaces APIを呼ばない
+  if (!forceCallPlaces && baseSpots.length >= minRequiredCount) {
+    console.log("[koyo-places] Skipping Places API: spots.length >= minRequiredCount", {
+      spotsCount: baseSpots.length,
+      minRequiredCount,
+      reason: reason || "sufficient_db_candidates",
+    });
     // DBスポットにsourceフィールドを追加
     baseSpots.forEach((spot) => {
       if (!spot.source) {
@@ -350,7 +384,7 @@ export async function integratePlaces(
 
   if (baseLocation) {
     const keyword = stopIntent.foodCategory ?? stopIntent.keyword ?? stopIntent.fallbackKeyword;
-    console.log("[koyo-places] Stop intent detected:", stopIntent.type, "searching places near:", baseLocation, "keyword:", keyword);
+    console.log("[koyo-places] Stop intent detected:", stopIntent.type, "searching places near:", baseLocation, "keyword:", keyword, "forceCallPlaces:", forceCallPlaces, "reason:", reason);
 
     const place = await searchPlaces(baseLocation, stopIntent);
 

@@ -45,6 +45,7 @@ export default function Page() {
   const clearDestination = useSpotStore((s) => s.clearDestination);
   const setRouteInfo = useSpotStore((s) => s.setRouteInfo);
   const clearRouteInfo = useSpotStore((s) => s.clearRouteInfo);
+  const routeInfo = useSpotStore((s) => s.routeInfo);
   const originInputMode = useSpotStore((s) => s.originInputMode);
   const setOriginInputMode = useSpotStore((s) => s.setOriginInputMode);
   const clearOriginInputMode = useSpotStore((s) => s.clearOriginInputMode);
@@ -242,7 +243,8 @@ export default function Page() {
         applyRouteUpdate({
           routeInfo: data.routeInfo || null,
           routePlan: data.routePlan || null,
-          spots: data.routePlan?.spots as Spot[] | undefined,
+          // routePlanが無い場合でも、after:phase2_2_done は data.spots（確定spots）を返す前提なのでフォールバックする
+          spots: (data.routePlan?.spots ?? (Array.isArray(data.spots) ? data.spots : undefined)) as Spot[] | undefined,
           optionalSpots: data.optionalSpots && Array.isArray(data.optionalSpots) ? data.optionalSpots : undefined,
         });
         console.log("[page.tsx] sendMessageWithUserState Phase2-2: Applied route update via applyRouteUpdate");
@@ -261,9 +263,15 @@ export default function Page() {
             routeInfo: data.routeInfo,
           });
         } else {
-          applyRouteUpdate({
-            routeInfo: null,
-          });
+          // Afterのdestination質問など（after-destination-select）はrouteInfoを消さない
+          // routeInfoをnullにすると routeReady=false になり、Mapの描画が止まるため。
+          if (mode === "after" && data.mode === "after-destination-select") {
+            console.log("[page.tsx] sendMessageWithUserState: No routeInfo in response (after-destination-select), keeping current routeInfo");
+          } else {
+            applyRouteUpdate({
+              routeInfo: null,
+            });
+          }
         }
 
         // RoutePlan の更新（Phase2-1）
@@ -569,7 +577,8 @@ export default function Page() {
         applyRouteUpdate({
           routeInfo: data.routeInfo || null,
           routePlan: data.routePlan || null,
-          spots: data.routePlan?.spots as Spot[] | undefined,
+          // routePlanが無い場合でも、after:phase2_2_done は data.spots（確定spots）を返す前提なのでフォールバックする
+          spots: (data.routePlan?.spots ?? (Array.isArray(data.spots) ? data.spots : undefined)) as Spot[] | undefined,
           optionalSpots: data.optionalSpots && Array.isArray(data.optionalSpots) ? data.optionalSpots : undefined,
         });
         console.log("[page.tsx] Phase2-2: Applied route update via applyRouteUpdate");
@@ -584,16 +593,31 @@ export default function Page() {
 
         // Phase2-1 または通常の処理: routeInfo の扱い
         if (data.routeInfo) {
+          console.log("[page.tsx] onSend: Applying routeInfo via applyRouteUpdate:", {
+            origin: data.routeInfo.origin,
+            destination: data.routeInfo.destination,
+            waypointsCount: data.routeInfo.waypoints?.length || 0,
+            waypoints: data.routeInfo.waypoints,
+          });
           applyRouteUpdate({
             routeInfo: data.routeInfo,
           });
         } else {
-          applyRouteUpdate({
-            routeInfo: null,
-          });
+          if (mode === "after" && data.mode === "after-destination-select") {
+            console.log("[page.tsx] onSend: No routeInfo in response (after-destination-select), keeping current routeInfo");
+          } else {
+            console.log("[page.tsx] onSend: No routeInfo in response, clearing routeInfo");
+            applyRouteUpdate({
+              routeInfo: null,
+            });
+          }
         }
 
-        // RoutePlan の更新（Phase2-1）
+      // RoutePlan の更新（Phase2-1/legacy）
+      // NOTE:
+      // - Afterモードは Phase2-2.5 で applyRouteUpdate に統一済み
+      // - Afterの data.spots は Phase2-1では optionalSpots（候補）として扱うため、ここで routePlan/spots を構築・上書きしない
+      if (mode !== "after") {
         if (isRouteEditIntent && data.routePlan) {
           // 編集エンドポイントからのレスポンス: routePlanを更新
           applyRouteUpdate({
@@ -605,7 +629,7 @@ export default function Page() {
           // 初期生成: 新しいRoutePlanを作成
           const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           const modeUpper = mode.toUpperCase() as "BEFORE" | "STAY" | "AFTER";
-          
+
           const routePlan: RoutePlan = {
             planId,
             mode: modeUpper,
@@ -634,7 +658,7 @@ export default function Page() {
             },
             bCallCount: 0, // 初期生成時は0
           };
-          
+
           applyRouteUpdate({
             routePlan,
             spots: data.spots,
@@ -648,6 +672,7 @@ export default function Page() {
           console.log("[page.tsx] Cleared RoutePlan via applyRouteUpdate (no spots or routeInfo)");
         }
       }
+      }
 
       // ============================================================
       // スポット配列の受け取り処理
@@ -659,118 +684,44 @@ export default function Page() {
       // そのまま useSpotStore.setSpots() に渡す。
       // ============================================================
       
-      // Phase2-1: Afterモードでは data.spots（= optionalSpots）のみを使用
-      // confirmedSpots は routeInfo.origin/destination で持つため、setSpots には入れない
-      if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
-        // ============================================================
-        // 形式の揺れチェック（Task 5: page.tsx側の修正）
-        // ============================================================
-        const firstSpot = data.spots[0];
-        const hasSupabaseFormat = (
-          Array.isArray(data.spots) &&
-          firstSpot?.id &&
-          (firstSpot.lat !== undefined && firstSpot.lng !== undefined) &&
-          (firstSpot.city !== undefined || firstSpot.drive_minutes !== undefined)
-        );
+      // ============================================================
+      // スポット配列の受け取り処理（legacy）
+      // ============================================================
+      // NOTE:
+      // - Afterモードは Phase2-2.5 で applyRouteUpdate に統一済み。
+      // - Afterの data.spots は Phase2-1では optionalSpots（候補）であり、ここで setSpots/clearSpots すると
+      //   「確定spotsの消去 → GoogleMapのガードが作動 → ルートが出ない」が発生する。
+      if (mode !== "after") {
+        if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
+          const firstSpot = data.spots[0];
+          const hasSupabaseFormat = (
+            Array.isArray(data.spots) &&
+            firstSpot?.id &&
+            (firstSpot.lat !== undefined && firstSpot.lng !== undefined) &&
+            (firstSpot.city !== undefined || firstSpot.drive_minutes !== undefined)
+          );
 
-        if (hasSupabaseFormat) {
-          // Supabase 格納形式（既にOK）
-          console.log("[page.tsx] Received Supabase format spots:", data.spots.length);
-          setSpots(data.spots);
-          // returnを削除：スポット設定後もAIの返答を追加する必要がある
-        } else {
-          // ============================================================
-          // 【暫定実装】スポット名マッチングロジック
-          // ============================================================
-          // TODO: 将来的に廃止予定
-          // 
-          // 【現段階での用途】
-          // 1. 既存のチャット返答（テキストのみ）でも、一応マップを動かすための暫定手段
-          // 2. どのスポット名がマッチしやすい／しにくいかを把握するためのログ出力
-          // ============================================================
-          
-          // AI の独自 JSON → マッチングで Supabase に変換
-          console.log("[page.tsx] [暫定] Converting AI spots to Supabase format via name matching...");
-          console.log("[page.tsx] [暫定] AI returned spots:", data.spots.map((s: any) => s.name));
-        
-          // 【暫定】/api/spots/searchを呼び出してSupabase形式のデータを取得（全件取得して名前でマッチング）
-        try {
-          const searchRes = await fetch("/api/spots/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode,
-              maxSpots: 50, // 全件取得するため大きな値を設定
-            }),
+          console.log("[page.tsx] Format check:", {
+            isArray: Array.isArray(data.spots),
+            hasId: !!firstSpot?.id,
+            hasLat: firstSpot?.lat !== undefined,
+            hasLng: firstSpot?.lng !== undefined,
+            hasCity: firstSpot?.city !== undefined,
+            hasDriveMinutes: firstSpot?.drive_minutes !== undefined,
+            firstSpot: firstSpot,
+            hasSupabaseFormat,
           });
 
-          if (searchRes.ok) {
-            const searchData = await searchRes.json();
-            const supabaseSpots = searchData.spots || [];
-            console.log("[page.tsx] [暫定] Supabase spots count:", supabaseSpots.length);
-            
-            // 【暫定】AIが返したスポット名と一致するSupabaseスポットを抽出（部分一致も考慮）
-            const aiSpotNames = data.spots.map((s: any) => s.name.trim());
-            const matchedSpots: any[] = [];
-            const usedSpotIds = new Set<string>(); // 重複防止
-            
-            console.log("[page.tsx] [暫定] AI spot names:", aiSpotNames);
-            console.log("[page.tsx] [暫定] Supabase spot names:", supabaseSpots.map((s: any) => s.name));
-            
-            aiSpotNames.forEach((aiName: string) => {
-              // 完全一致を優先
-              let matched = supabaseSpots.find((spot: any) => 
-                !usedSpotIds.has(spot.id) && spot.name.trim() === aiName
-              );
-              
-              // 完全一致がない場合は部分一致を試す（より柔軟に）
-              if (!matched) {
-                // キーワード抽出（「上山城」「蔵王温泉」「蔵王刈田峠」など）
-                const keywords = aiName.replace(/[の・]/g, "").split(/(?=[城温泉峠市町])/);
-                
-                matched = supabaseSpots.find((spot: any) => {
-                  if (usedSpotIds.has(spot.id)) return false;
-                  
-                  const spotName = spot.name.replace(/[の・]/g, "");
-                  
-                  // キーワードが含まれているかチェック
-                  return keywords.some(keyword => 
-                    keyword.length >= 2 && spotName.includes(keyword)
-                  ) || spotName.includes(aiName.replace(/[の・]/g, "")) || 
-                     aiName.replace(/[の・]/g, "").includes(spotName);
-                });
-              }
-              
-              if (matched) {
-                matchedSpots.push(matched);
-                usedSpotIds.add(matched.id);
-                console.log(`[page.tsx] [暫定] ✓ Matched: "${aiName}" -> "${matched.name}" (lat=${matched.lat}, lng=${matched.lng})`);
-              } else {
-                console.warn(`[page.tsx] [暫定] ✗ No match found for: "${aiName}"`);
-              }
-            });
-
-            if (matchedSpots.length > 0) {
-              console.log(`[page.tsx] [暫定] Using matched Supabase spots: ${matchedSpots.length}/${aiSpotNames.length} matched`);
-              setSpots(matchedSpots);
-            } else {
-              console.warn("[page.tsx] [暫定] No matching Supabase spots found, clearing spots");
-              clearSpots();
-            }
+          if (hasSupabaseFormat) {
+            console.log("[page.tsx] Received Supabase format spots:", data.spots.length);
+            setSpots(data.spots);
           } else {
-            console.warn("[page.tsx] [暫定] Failed to fetch Supabase spots, clearing spots");
-            clearSpots();
+            console.warn("[page.tsx] Non-supabase format spots received; ignoring in legacy handler");
           }
-        } catch (searchError) {
-          console.error("[page.tsx] [暫定] Error fetching Supabase spots:", searchError);
-          // エラー時はスポットをクリア（古い座標を使わない）
+        } else {
+          console.log("[page.tsx] No spots found, clearing");
           clearSpots();
         }
-        }
-      } else {
-        // スポット配列が空または存在しない場合
-        console.log("[page.tsx] No spots found, clearing");
-        clearSpots();
       }
 
       // ④ AI の返答を追加
@@ -801,8 +752,11 @@ export default function Page() {
       <div className="relative z-10 flex flex-col items-center pt-8 pb-24 px-4">
         <ChatContainer mode={mode} setMode={setMode} messages={messages} isLoading={isLoading} />
 
-        {/* 地図で見るボタン（spotsがある場合のみ表示） */}
-        {spots.length > 0 && (
+        {/* 地図で見るボタン
+            - 以前は「spotsがある場合のみ」表示だったが、Afterの直行ルート（waypoints=0）ではspotsが空でもrouteInfoが存在する。
+            - routeInfo（origin/destination）があるなら地図でルート表示できるため、routeInfo優先で表示する。
+        */}
+        {(spots.length > 0 || !!routeInfo) && (
           <div className="mt-4 w-full max-w-[480px] px-4">
             <button
               onClick={() => router.push("/map")}

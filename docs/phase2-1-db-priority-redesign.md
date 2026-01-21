@@ -540,3 +540,4 @@ export function detectStopIntent(message: string): StopIntent | null {
 - **推奨**: `app/api/koyo/_utils/intent/`配下に辞書モジュールを配置
 - **構成**: `foodDictionary.ts` + `stopTypeConfig.ts`
 
+

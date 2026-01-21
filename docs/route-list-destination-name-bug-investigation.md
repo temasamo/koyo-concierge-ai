@@ -119,3 +119,4 @@ const getDestinationName = () => {
    - ただし、コード上は`isLastLeg`が`true`の場合は使われないはず
 
 
+

@@ -98,3 +98,4 @@ WHERE table_name = 'spot_master'
 ORDER BY ordinal_position;
 ```
 
+
