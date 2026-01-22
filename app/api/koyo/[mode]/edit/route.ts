@@ -200,7 +200,7 @@ export async function POST(
           const place = await searchMealPlaces(baseLocation, stopIntent);
           
           if (place) {
-            const placeSpotData = convertPlaceToSpot(place);
+            const placeSpotData = convertPlaceToSpot(place, stopIntent);
             // RoutePlan["spots"][0]の型に合わせて変換
             const placeSpot: RoutePlan["spots"][0] = {
               ...placeSpotData,
