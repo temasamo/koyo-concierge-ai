@@ -597,3 +597,4 @@ function extractSelectedSpotIds(reply: string, candidateIds: string[]): string[]
 - **LLMが候補IDから選択できない場合**: フォールバック処理が必要（現状は空配列を返す）
 - **DB候補が0件の場合**: Places APIに依存（既存の動作と同じ）
 
+

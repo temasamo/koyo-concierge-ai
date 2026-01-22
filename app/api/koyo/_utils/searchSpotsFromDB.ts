@@ -44,14 +44,17 @@ export async function searchSpotsFromDB(params: {
   let dbMatchCount = 0;
   
   // stopIntent.typeごとの条件分岐（実データ前提）
+  let whereCondition = "";
   switch (stopIntent.type) {
     case "lunch": {
       // base: categoryに「食べる」を含むもの
       query = query.ilike("category", "%食べる%");
+      whereCondition = `category ilike '%食べる%'`;
       
       // 料理ジャンルキーワードがある場合: nameで部分一致
       if (foodKeyword) {
         query = query.ilike("name", `%${foodKeyword}%`);
+        whereCondition += ` AND name ilike '%${foodKeyword}%'`;
       }
       
       // 全件数を取得（categoryのみ）
@@ -67,6 +70,7 @@ export async function searchSpotsFromDB(params: {
     case "cafe": {
       // categoryに「食べる」を含むもの（＋ nameに「喫茶」「カフェ」等が含まれるものを優先）
       query = query.ilike("category", "%食べる%");
+      whereCondition = `category ilike '%食べる%'`;
       
       const { count } = await supabase
         .from("spot_master")
@@ -80,6 +84,7 @@ export async function searchSpotsFromDB(params: {
     case "rest": {
       // categoryに「自然」または「遊ぶ」を含むもの（自然・遊ぶ等も部分一致で拾う）
       query = query.or("category.ilike.%自然%,category.ilike.%遊ぶ%");
+      whereCondition = `category ilike '%自然%' OR category ilike '%遊ぶ%'`;
       
       const { count } = await supabase
         .from("spot_master")
@@ -93,6 +98,7 @@ export async function searchSpotsFromDB(params: {
     case "onsen": {
       // DBに温泉カテゴリは存在しない前提（基本0件想定）
       query = query.or("category.ilike.%温泉%,name.ilike.%温泉%");
+      whereCondition = `category ilike '%温泉%' OR name ilike '%温泉%'`;
       
       const { count } = await supabase
         .from("spot_master")
@@ -106,6 +112,7 @@ export async function searchSpotsFromDB(params: {
     case "shop": {
       // DBに観光/お土産カテゴリは存在しない前提（基本0件想定）
       query = query.or("category.ilike.%観光%,category.ilike.%お土産%,name.ilike.%お土産%,name.ilike.%売店%");
+      whereCondition = `category ilike '%観光%' OR category ilike '%お土産%' OR name ilike '%お土産%' OR name ilike '%売店%'`;
       
       const { count } = await supabase
         .from("spot_master")
@@ -122,6 +129,7 @@ export async function searchSpotsFromDB(params: {
       const subType = stopIntent.subType ?? null;
       if (subType === "history") {
         query = query.ilike("category", "%歴史%");
+        whereCondition = `category ilike '%歴史%'`;
         const { count } = await supabase
           .from("spot_master")
           .select("*", { count: "exact", head: true })
@@ -129,6 +137,7 @@ export async function searchSpotsFromDB(params: {
         dbCount = count || 0;
       } else if (subType === "nature") {
         query = query.ilike("category", "%自然%");
+        whereCondition = `category ilike '%自然%'`;
         const { count } = await supabase
           .from("spot_master")
           .select("*", { count: "exact", head: true })
@@ -136,6 +145,7 @@ export async function searchSpotsFromDB(params: {
         dbCount = count || 0;
       } else if (subType === "play") {
         query = query.ilike("category", "%遊ぶ%");
+        whereCondition = `category ilike '%遊ぶ%'`;
         const { count } = await supabase
           .from("spot_master")
           .select("*", { count: "exact", head: true })
@@ -143,6 +153,7 @@ export async function searchSpotsFromDB(params: {
         dbCount = count || 0;
       } else if (subType === "festival") {
         query = query.ilike("category", "%祭り%");
+        whereCondition = `category ilike '%祭り%'`;
         const { count } = await supabase
           .from("spot_master")
           .select("*", { count: "exact", head: true })
@@ -153,6 +164,7 @@ export async function searchSpotsFromDB(params: {
         query = query.or(
           "category.ilike.%歴史%,category.ilike.%自然%,category.ilike.%遊ぶ%,category.ilike.%祭り%"
         );
+        whereCondition = `category ilike '%歴史%' OR category ilike '%自然%' OR category ilike '%遊ぶ%' OR category ilike '%祭り%'`;
         const { count } = await supabase
           .from("spot_master")
           .select("*", { count: "exact", head: true })
@@ -165,6 +177,7 @@ export async function searchSpotsFromDB(params: {
     
     default: {
       // デフォルト: 全件取得（後方互換性）
+      whereCondition = "全件";
       const { count } = await supabase
         .from("spot_master")
         .select("*", { count: "exact", head: true });
@@ -172,6 +185,14 @@ export async function searchSpotsFromDB(params: {
       break;
     }
   }
+  
+  // DB検索ログ出力
+  console.log("[searchSpotsFromDB] DB search:", {
+    stopIntentType: stopIntent.type,
+    subType: stopIntent.subType || null,
+    whereCondition,
+    dbCount,
+  });
   
   const { data, error } = await query
     .order("name")

@@ -541,3 +541,4 @@ export function detectStopIntent(message: string): StopIntent | null {
 - **構成**: `foodDictionary.ts` + `stopTypeConfig.ts`
 
 
+

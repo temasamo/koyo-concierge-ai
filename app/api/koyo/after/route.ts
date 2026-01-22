@@ -420,12 +420,45 @@ function extractSelectedSpotIds(reply: string, candidateIds: string[]): string[]
     const cleanedReply = reply.replace(/```json\s*/g, '').replace(/```\s*/g, '');
     const jsonResponse = JSON.parse(cleanedReply);
     
+    console.log("[extractSelectedSpotIds] Parsed JSON:", {
+      hasSelectedSpotIds: !!jsonResponse.selectedSpotIds,
+      selectedSpotIdsType: typeof jsonResponse.selectedSpotIds,
+      selectedSpotIdsIsArray: Array.isArray(jsonResponse.selectedSpotIds),
+      selectedSpotIdsValue: jsonResponse.selectedSpotIds,
+      hasPlan: !!jsonResponse.plan,
+      candidateIdsCount: candidateIds.length,
+    });
+    
+    // 優先: selectedSpotIds から取得
     if (jsonResponse.selectedSpotIds && Array.isArray(jsonResponse.selectedSpotIds)) {
       // 候補IDリストに含まれるもののみを返す
-      return jsonResponse.selectedSpotIds.filter((id: string) => candidateIds.includes(id));
+      const filtered = jsonResponse.selectedSpotIds.filter((id: string) => candidateIds.includes(id));
+      console.log("[extractSelectedSpotIds] Filtered IDs from selectedSpotIds:", {
+        originalCount: jsonResponse.selectedSpotIds.length,
+        filteredCount: filtered.length,
+        filteredIds: filtered,
+      });
+      return filtered;
+    }
+    
+    // フォールバック: plan 配列からIDを抽出
+    if (jsonResponse.plan && Array.isArray(jsonResponse.plan) && jsonResponse.plan.length > 0) {
+      const firstPlan = jsonResponse.plan[0];
+      if (firstPlan.spots && Array.isArray(firstPlan.spots)) {
+        const idsFromPlan = firstPlan.spots
+          .map((spot: any) => spot.id)
+          .filter((id: string) => id && candidateIds.includes(id));
+        console.log("[extractSelectedSpotIds] Extracted IDs from plan:", {
+          planSpotsCount: firstPlan.spots.length,
+          extractedCount: idsFromPlan.length,
+          extractedIds: idsFromPlan,
+        });
+        return idsFromPlan;
+      }
     }
   } catch (e) {
     console.warn("[extractSelectedSpotIds] Failed to parse JSON:", e);
+    console.warn("[extractSelectedSpotIds] Reply preview:", reply.substring(0, 500));
   }
   
   return [];
@@ -1139,54 +1172,56 @@ ${numberedList}
     // Phase2-1: stopIntent検出（先に検出）
     // まず「今回の発話」を最優先し、無ければ履歴から「直近のstopIntent」を拾う
     const currentStopIntent = detectStopIntent(userMessage);
-    const stopIntentMessage =
-      (currentStopIntent ? userMessage : findLatestStopIntentMessage(userMessages)) || userMessage;
-    const stopIntent = currentStopIntent ?? detectStopIntent(stopIntentMessage);
+    const latestIntentMessage = findLatestStopIntentMessage(userMessages);
+    const stopIntentMessage = currentStopIntent ? userMessage : (latestIntentMessage || userMessage);
+    const historyStopIntent = latestIntentMessage ? detectStopIntent(latestIntentMessage) : null;
+    let stopIntent = currentStopIntent ?? historyStopIntent;
+    
+    // stopIntentResolvedFrom の判定
+    let stopIntentResolvedFrom: "current" | "history" | "default_sightseeing";
+    if (currentStopIntent) {
+      stopIntentResolvedFrom = "current";
+    } else if (historyStopIntent) {
+      stopIntentResolvedFrom = "history";
+    } else {
+      stopIntentResolvedFrom = "default_sightseeing";
+    }
+    
+    // stopIntent が null の場合、sightseeing デフォルトにフォールバック
+    if (!stopIntent) {
+      console.warn("[koyo-after] stopIntent復元失敗: sightseeingデフォルトにフォールバック", {
+        rawUserMessage: userMessage,
+        latestIntentMessage: latestIntentMessage || null,
+      });
+      stopIntent = {
+        type: "sightseeing",
+        subType: null,
+        fallbackKeyword: "観光",
+        keyword: "観光",
+      };
+      stopIntentResolvedFrom = "default_sightseeing";
+    }
+    
+    // stopIntent 復元過程のログ出力
+    console.log("[koyo-after] stopIntent resolved:", {
+      rawUserMessage: userMessage,
+      latestIntentMessage: latestIntentMessage || null,
+      stopIntentMessage: stopIntentMessage,
+      stopIntentType: stopIntent.type,
+      subType: stopIntent.subType || null,
+      stopIntent復元成功: !!stopIntent,
+      stopIntentResolvedFrom,
+    });
     
     // 分岐トレースログ：判定結果
     console.log("[koyo-after] 🔍 BRANCH TRACE - Conditions:", {
       hasDestination,
-      stopIntent: stopIntent ? { type: stopIntent.type, foodCategory: stopIntent.foodCategory } : null,
+      stopIntent: { type: stopIntent.type, foodCategory: stopIntent.foodCategory, subType: stopIntent.subType },
+      stopIntentResolvedFrom,
     });
     
-    // Phase2-1: stopIntentがある場合はDB候補→LLM選択方式、ない場合は既存方式
-    let reply: string;
-    
-    if (stopIntent) {
-      // DB候補→LLM選択方式（新しい方式）
-      // この処理は後続のコードで実装（1506行目付近）
-      // ここではreplyを空文字列に設定（後続で上書き）
-      reply = "";
-    } else {
-      // 既存方式（stopIntentがない場合）
-      const systemPrompt = await getSystemPrompt(null);
-      const messages: ChatCompletionMessageParam[] = [
-        { role: "system", content: systemPrompt },
-        ...userMessages,
-      ];
-      const openai = getOpenAIClient();
-      const completion = await openai.chat.completions.create({
-        model: CHAT_MODEL,
-        messages,
-        temperature: 0.7,
-        response_format: { type: "json_object" },
-      });
-      reply = completion.choices[0]?.message?.content ?? "";
-      console.log("[koyo-after] AI reply (first 500 chars):", reply.substring(0, 500));
-    }
-
-    // AIの返答から destination 情報を抽出
-    let aiDestination: OriginInfo | undefined;
-    try {
-      const cleanedReply = reply.replace(/```json\s*/g, '').replace(/```\s*/g, '').replace(/```[\s\S]*?```/g, '');
-      const jsonResponse = JSON.parse(cleanedReply);
-      if (jsonResponse.destination && jsonResponse.destination.type) {
-        aiDestination = jsonResponse.destination as OriginInfo;
-        console.log("[koyo-after] Extracted destination from AI reply:", aiDestination);
-      }
-    } catch (e) {
-      // JSON解析に失敗した場合は無視
-    }
+    // Phase2-1: Afterは常に「候補→LLM選択」フローを走らせる（stopIntent は必ず存在する）
+    let reply: string = "";
 
     // --------------------------------------------------
     // A. すでに destination が決まっている場合
@@ -1447,22 +1482,23 @@ F. その他
       }
     }
 
-    // Phase2-1: DB候補→LLM選択方式（stopIntentがある場合のみ）
+    // Phase2-1: DB候補→LLM選択方式（stopIntent は必ず存在する）
     let matchedSpots: Spot[] = [];
     let dbCandidates: Spot[] = [];
     let dbCount = 0;
     let dbMatchCount = 0;
     let hasFoodKeyword = false;
     let foodKeyword: string | null = null;
-    let llmReply = reply; // stopIntentがない場合は既存のreplyを使用
+    let llmReply = reply;
     let placesApiFailed = false;
     let placesAdded = false;
     let forceCallPlaces = false;
     let reason: string | null = null;
-    let completion: any = undefined; // LLM呼び出し結果（stopIntentがない場合も使用）
-    // aiDestinationは1155行目で既に定義済み（let aiDestination: OriginInfo | undefined;）
+    let completion: any = undefined; // LLM呼び出し結果
+    let aiDestination: OriginInfo | undefined; // LLM返答から抽出
     
-    if (stopIntent) {
+    // stopIntent は必ず存在する（sightseeing デフォルトでフォールバック済み）
+    {
       try {
         // 料理ジャンルキーワード検出（lunch用）
         const foodKeywordResult = detectFoodKeyword(stopIntentMessage);
@@ -1502,9 +1538,12 @@ F. その他
         dbMatchCount = dbResult.dbMatchCount;
         
         console.log("[koyo-after] Phase2-1: DB search completed", {
+          stopIntentType: stopIntent.type,
+          subType: stopIntent.subType || null,
           dbCount,
           dbMatchCount,
           candidatesCount: dbCandidates.length,
+          willCallPlaces: dbCandidates.length < 3,
         });
         
         // 候補IDリストをLLMに渡す
@@ -1530,6 +1569,7 @@ F. その他
         
         console.log("[koyo-after] Phase2-1: LLM reply received", {
           replyLength: llmReply.length,
+          replyPreview: llmReply.substring(0, 500),
         });
         
         // LLMは候補IDから選択
@@ -1538,8 +1578,23 @@ F. その他
         
         console.log("[koyo-after] Phase2-1: Selected spots", {
           selectedIdsCount: selectedIds.length,
+          selectedIds: selectedIds,
+          candidateIdsCount: candidateIds.length,
+          candidateIdsPreview: candidateIds.slice(0, 3),
           matchedSpotsCount: matchedSpots.length,
         });
+        
+        // AIの返答から destination 情報を抽出（llmReply から）
+        try {
+          const cleanedLlmReply = llmReply.replace(/```json\s*/g, '').replace(/```\s*/g, '').replace(/```[\s\S]*?```/g, '');
+          const jsonResponse = JSON.parse(cleanedLlmReply);
+          if (jsonResponse.destination && jsonResponse.destination.type) {
+            aiDestination = jsonResponse.destination as OriginInfo;
+            console.log("[koyo-after] Extracted destination from LLM reply:", aiDestination);
+          }
+        } catch (e) {
+          // JSON解析に失敗した場合は無視
+        }
       } catch (phase2Error: any) {
         console.error("[koyo-after] Phase2-1 error:", phase2Error);
         console.error("[koyo-after] Phase2-1 error stack:", phase2Error?.stack);
@@ -1622,21 +1677,26 @@ F. その他
       }
       
       // 統一ログ出力
+      const stopIntentFallback = stopIntentResolvedFrom === "default_sightseeing";
       console.log("[koyo-after] Phase2-1 DB priority search result:", {
         stopIntentType: stopIntent.type,
+        subType: stopIntent.subType || null,
         foodCategory: stopIntent.foodCategory || null,
         foodKeyword: foodKeyword || null,
+        stopIntentResolvedFrom,
+        stopIntentFallback,
         dbCount,
         dbMatchCount,
         minRequiredCount: 3,
         willCallPlaces: forceCallPlaces || matchedSpots.length < 3,
         forceCallPlaces,
+        forcedPlacesCall: forceCallPlaces,
         placesCalled: forceCallPlaces || matchedSpots.length < 3,
         placesAdded,
         placesApiFailed,
         reason,
       });
-    } // ← if (stopIntent) の終了
+    } // ← stopIntent ブロックの終了（stopIntent は必ず存在する）
     
     // plan配列を構築（LLMのreplyから抽出、またはselectedSpotIdsから生成）
     let finalPlan: any[] | undefined;

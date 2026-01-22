@@ -375,3 +375,4 @@ console.log("[koyo-stay] After integratePlaces:", {
 - **ログ出力**: 各モードで統一フォーマットのログを追加
 
 
+

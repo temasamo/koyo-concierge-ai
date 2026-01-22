@@ -3,6 +3,7 @@
 
 import type { StopIntent, StopType } from "@/types/route";
 import { detectStopIntent as detectStopIntentFromUtils } from "./detectStopIntent";
+import { normalizeName } from "./matchSpot";
 
 // Google Places APIの型定義
 type GooglePlace = {
@@ -268,7 +269,41 @@ export async function searchLunchPlaces(
 /**
  * Google PlaceをSpot形式に変換
  */
-export function convertPlaceToSpot(place: GooglePlace): {
+/**
+ * stopIntent に基づいて表示用 category を決定
+ */
+function placeCategoryFromStopIntent(stopIntent: StopIntent): string {
+  switch (stopIntent.type) {
+    case "lunch":
+      return "食べる";
+    case "cafe":
+      return "カフェ";
+    case "onsen":
+      return "温泉";
+    case "shop":
+      return "お土産";
+    case "rest":
+      return "自然"; // または "遊ぶ" でも可
+    case "sightseeing": {
+      // subType に応じて category を決定
+      if (stopIntent.subType === "history") {
+        return "歴史";
+      } else if (stopIntent.subType === "nature") {
+        return "自然";
+      } else if (stopIntent.subType === "play") {
+        return "遊ぶ";
+      } else if (stopIntent.subType === "festival") {
+        return "祭り";
+      } else {
+        return "観光";
+      }
+    }
+    default:
+      return "観光";
+  }
+}
+
+export function convertPlaceToSpot(place: GooglePlace, stopIntent: StopIntent): {
   id: string;
   name: string;
   lat: number;
@@ -284,7 +319,7 @@ export function convertPlaceToSpot(place: GooglePlace): {
     name: place.name,
     lat: place.geometry.location.lat,
     lng: place.geometry.location.lng,
-    category: "食べる",
+    category: placeCategoryFromStopIntent(stopIntent),
     source: "places",
     stayMinutes: 60, // 固定60分
     placeId: place.place_id,
@@ -389,16 +424,74 @@ export async function integratePlaces(
     const place = await searchPlaces(baseLocation, stopIntent);
 
     if (place) {
-      const newSpot = convertPlaceToSpot(place);
-      // spots配列の先頭に挿入（spotsが空の場合は先頭、そうでない場合はbaseSpotIndex + 1）
-      const insertIndex = baseSpots.length > 0 && baseSpots.length >= 2 
-        ? Math.floor(baseSpots.length / 2) + 1 
-        : baseSpots.length > 0 
-          ? 1 
-          : 0;
-      baseSpots.splice(insertIndex, 0, newSpot);
-      placesAdded = true;
-      console.log("[koyo-places] Added place at index:", insertIndex, "name:", place.name, "type:", stopIntent.type, "foodCategory:", stopIntent.foodCategory);
+      const newSpot = convertPlaceToSpot(place, stopIntent);
+      
+      // 重複チェック
+      let duplicateOf: any = null;
+      let duplicateReason: "distance<=150" | "name_match" | null = null;
+      let duplicateDistance: number | null = null;
+      
+      // normalizedNew は for ループの外で1回だけ計算
+      const normalizedNew = normalizeName(newSpot.name);
+      
+      for (const existingSpot of baseSpots) {
+        const hasCoords =
+          existingSpot.lat != null && existingSpot.lng != null &&
+          newSpot.lat != null && newSpot.lng != null;
+
+        if (hasCoords) {
+          const distance = calculateDistance(
+            existingSpot.lat as number,
+            existingSpot.lng as number,
+            newSpot.lat as number,
+            newSpot.lng as number
+          );
+
+          if (distance <= 150) {
+            duplicateOf = existingSpot;
+            duplicateReason = "distance<=150";
+            duplicateDistance = distance;
+            break;
+          }
+
+          // 座標がある場合は名前判定はしない（誤爆防止）
+          continue;
+        }
+
+        // 座標が揃わない場合のみ名前判定
+        const normalizedExisting = normalizeName(existingSpot.name);
+
+        const nameMatch =
+          normalizedNew === normalizedExisting ||
+          (normalizedNew.length >= 4 && normalizedExisting.length >= 4 &&
+            (normalizedNew.includes(normalizedExisting) || normalizedExisting.includes(normalizedNew)));
+
+        if (nameMatch) {
+          duplicateOf = existingSpot;
+          duplicateReason = "name_match";
+          break;
+        }
+      }
+      
+      if (duplicateOf) {
+        console.log("[koyo-places] Skipping duplicate place", {
+          newName: newSpot.name,
+          existingName: duplicateOf.name,
+          distanceMeters: duplicateDistance,
+          reason: duplicateReason,
+        });
+        // スキップ（placesAdded = false のまま、追加処理はしない）
+      } else {
+        // 追加処理
+        const insertIndex = baseSpots.length > 0 && baseSpots.length >= 2 
+          ? Math.floor(baseSpots.length / 2) + 1 
+          : baseSpots.length > 0 
+            ? 1 
+            : 0;
+        baseSpots.splice(insertIndex, 0, newSpot);
+        placesAdded = true;
+        console.log("[koyo-places] Added place at index:", insertIndex, "name:", place.name, "type:", stopIntent.type, "foodCategory:", stopIntent.foodCategory);
+      }
     } else {
       placesApiFailed = true;
       console.log("[koyo-places] No place found from Google Places API for type:", stopIntent.type);

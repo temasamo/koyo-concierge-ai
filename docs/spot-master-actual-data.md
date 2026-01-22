@@ -249,3 +249,4 @@ const { data } = await supabase
 - **Places API**: `dbCandidates.length < 3`のときのみ呼ぶ
 - **特に`onsen`**: DBに存在しないため、Places APIに依存
 
+

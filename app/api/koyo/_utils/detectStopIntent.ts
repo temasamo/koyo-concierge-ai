@@ -128,6 +128,9 @@ export function detectStopIntent(message: string): StopIntent | null {
     "展望",
     "公園",
     "遊び",
+    "遊んで",
+    "遊びたい",
+    "遊ぶ",
     "体験",
     "アクティビティ",
     "祭り",
@@ -140,7 +143,7 @@ export function detectStopIntent(message: string): StopIntent | null {
       subType = "history";
     } else if (["自然", "景色", "渓谷", "山", "展望", "公園"].some((k) => normalized.includes(k))) {
       subType = "nature";
-    } else if (["遊び", "体験", "アクティビティ"].some((k) => normalized.includes(k))) {
+    } else if (["遊び", "遊んで", "遊びたい", "遊ぶ", "体験", "アクティビティ"].some((k) => normalized.includes(k))) {
       subType = "play";
     } else if (["祭り", "花笠"].some((k) => normalized.includes(k))) {
       subType = "festival";
