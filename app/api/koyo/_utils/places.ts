@@ -6,9 +6,15 @@ import { detectStopIntent as detectStopIntentFromUtils } from "./detectStopInten
 import { normalizeName } from "./matchSpot";
 
 // Google Places APIの型定義
+// レスポンス確認後に実在フィールドに合わせて確定予定
 type GooglePlace = {
   place_id: string;
   name: string;
+  localized_name?: string; // 日本語名（存在する場合）
+  displayName?: {
+    text?: string; // 表示名（存在する場合）
+    languageCode?: string;
+  };
   geometry: {
     location: {
       lat: number;
@@ -177,6 +183,7 @@ export async function searchPlaces(
     url.searchParams.set("keyword", keyword);
     url.searchParams.set("type", placeType);
     url.searchParams.set("key", apiKey);
+    url.searchParams.set("language", "ja"); // 日本語レスポンスを要求
 
     console.log("[koyo-places] Searching places near:", baseLocation, "type:", stopIntent.type, "keyword:", keyword);
 
@@ -193,6 +200,11 @@ export async function searchPlaces(
     }
 
     console.log("[koyo-places] Found places:", data.results.length);
+
+    // PLACES_DEBUG=true の時だけ results[0] をログ出力
+    if (process.env.PLACES_DEBUG === "true" && data.results.length > 0) {
+      console.log("[koyo-places] Raw API response (first result):", JSON.stringify(data.results[0], null, 2));
+    }
 
     // 距離を計算して追加
     const placesWithDistance = data.results.map((place) => ({
@@ -314,9 +326,12 @@ export function convertPlaceToSpot(place: GooglePlace, stopIntent: StopIntent): 
   placeId: string;
   isFromPlaces: boolean;
 } {
+  // 日本語名を優先的に使用: localized_name → displayName.text → name
+  const displayName = place.localized_name || place.displayName?.text || place.name;
+  
   return {
     id: `places_${place.place_id}`,
-    name: place.name,
+    name: displayName,
     lat: place.geometry.location.lat,
     lng: place.geometry.location.lng,
     category: placeCategoryFromStopIntent(stopIntent),
@@ -349,6 +364,8 @@ export async function integratePlaces(
     minRequiredCount?: number;
     forceCallPlaces?: boolean;
     reason?: string | null;
+    allCandidates?: any[]; // DBから取得した全候補（重複チェック用）
+    existingSpots?: any[]; // 既存のrouteに入っているスポット群（重複チェック用）
   }
 ): Promise<{ spots: any[]; placesApiFailed: boolean; placesAdded: boolean }> {
   const minRequiredCount = options?.minRequiredCount ?? 3;
@@ -426,6 +443,13 @@ export async function integratePlaces(
     if (place) {
       const newSpot = convertPlaceToSpot(place, stopIntent);
       
+      // 重複チェック対象を拡張: baseSpots + allCandidates + existingSpots
+      const allSpotsToCheck = [
+        ...baseSpots,
+        ...(options?.allCandidates || []),
+        ...(options?.existingSpots || [])
+      ];
+      
       // 重複チェック
       let duplicateOf: any = null;
       let duplicateReason: "distance<=150" | "name_match" | null = null;
@@ -434,7 +458,7 @@ export async function integratePlaces(
       // normalizedNew は for ループの外で1回だけ計算
       const normalizedNew = normalizeName(newSpot.name);
       
-      for (const existingSpot of baseSpots) {
+      for (const existingSpot of allSpotsToCheck) {
         const hasCoords =
           existingSpot.lat != null && existingSpot.lng != null &&
           newSpot.lat != null && newSpot.lng != null;
@@ -446,6 +470,13 @@ export async function integratePlaces(
             newSpot.lat as number,
             newSpot.lng as number
           );
+
+          console.log("[koyo-places] Duplicate check (distance)", {
+            newName: newSpot.name,
+            existingName: existingSpot.name,
+            distanceMeters: distance,
+            isDuplicate: distance <= 150
+          });
 
           if (distance <= 150) {
             duplicateOf = existingSpot;
@@ -466,6 +497,14 @@ export async function integratePlaces(
           (normalizedNew.length >= 4 && normalizedExisting.length >= 4 &&
             (normalizedNew.includes(normalizedExisting) || normalizedExisting.includes(normalizedNew)));
 
+        console.log("[koyo-places] Duplicate check (name)", {
+          newName: newSpot.name,
+          existingName: existingSpot.name,
+          normalizedNew: normalizedNew,
+          normalizedExisting: normalizedExisting,
+          isDuplicate: nameMatch
+        });
+
         if (nameMatch) {
           duplicateOf = existingSpot;
           duplicateReason = "name_match";
@@ -482,6 +521,14 @@ export async function integratePlaces(
         });
         // スキップ（placesAdded = false のまま、追加処理はしない）
       } else {
+        console.log("[koyo-places] No duplicate found, adding place", {
+          newName: newSpot.name,
+          baseSpots: baseSpots.length,
+          allCandidates: options?.allCandidates?.length || 0,
+          existingSpots: options?.existingSpots?.length || 0,
+          total: allSpotsToCheck.length,
+          willAdd: true
+        });
         // 追加処理
         const insertIndex = baseSpots.length > 0 && baseSpots.length >= 2 
           ? Math.floor(baseSpots.length / 2) + 1 

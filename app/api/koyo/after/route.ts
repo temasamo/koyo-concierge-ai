@@ -1668,6 +1668,7 @@ F. その他
             minRequiredCount: 3,
             forceCallPlaces,
             reason,
+            allCandidates: dbCandidates, // DBから取得した全候補（重複チェック用）
           }
         );
         

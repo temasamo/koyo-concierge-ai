@@ -598,3 +598,4 @@ function extractSelectedSpotIds(reply: string, candidateIds: string[]): string[]
 - **DB候補が0件の場合**: Places APIに依存（既存の動作と同じ）
 
 
+
