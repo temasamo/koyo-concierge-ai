@@ -157,12 +157,12 @@ const PLACE_TYPE_MAP: Record<StopType, string> = {
 export async function searchPlaces(
   baseLocation: { lat: number; lng: number },
   stopIntent: StopIntent
-): Promise<GooglePlace | null> {
+): Promise<GooglePlace[]> {
   // サーバー側では専用のAPIキーを使用
   const apiKey = process.env.GOOGLE_PLACES_API_SERVER_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
   if (!apiKey) {
     console.warn("[koyo-places] Google Places API key not found");
-    return null;
+    return [];
   }
   
   console.log("[koyo-places] Using API key:", apiKey.substring(0, 10) + "...");
@@ -190,13 +190,13 @@ export async function searchPlaces(
     const response = await fetch(url.toString());
     if (!response.ok) {
       console.error("[koyo-places] Google Places API error:", response.status);
-      return null;
+      return [];
     }
 
     const data = (await response.json()) as GooglePlacesResponse;
     if (data.status !== "OK" || !data.results || data.results.length === 0) {
       console.warn("[koyo-places] No places found:", data.status);
-      return null;
+      return [];
     }
 
     console.log("[koyo-places] Found places:", data.results.length);
@@ -237,17 +237,10 @@ export async function searchPlaces(
       return (a.distance ?? Infinity) - (b.distance ?? Infinity);
     });
 
-    const selectedPlace = candidates[0];
-    console.log("[koyo-places] Selected place:", {
-      name: selectedPlace.name,
-      rating: selectedPlace.rating,
-      distance: selectedPlace.distance,
-    });
-
-    return selectedPlace;
+    return candidates;
   } catch (error) {
     console.error("[koyo-places] Google Places API error:", error);
-    return null;
+    return [];
   }
 }
 
@@ -259,7 +252,8 @@ export async function searchMealPlaces(
   baseLocation: { lat: number; lng: number },
   stopIntent: StopIntent
 ): Promise<GooglePlace | null> {
-  return searchPlaces(baseLocation, stopIntent);
+  const places = await searchPlaces(baseLocation, stopIntent);
+  return places[0] ?? null;
 }
 
 /**
@@ -275,7 +269,8 @@ export async function searchLunchPlaces(
     placeType: "restaurant",
     radius: 2000,
   };
-  return searchPlaces(baseLocation, defaultStopIntent);
+  const places = await searchPlaces(baseLocation, defaultStopIntent);
+  return places[0] ?? null;
 }
 
 /**
@@ -438,89 +433,93 @@ export async function integratePlaces(
     const keyword = stopIntent.foodCategory ?? stopIntent.keyword ?? stopIntent.fallbackKeyword;
     console.log("[koyo-places] Stop intent detected:", stopIntent.type, "searching places near:", baseLocation, "keyword:", keyword, "forceCallPlaces:", forceCallPlaces, "reason:", reason);
 
-    const place = await searchPlaces(baseLocation, stopIntent);
+    const places = await searchPlaces(baseLocation, stopIntent);
 
-    if (place) {
-      const newSpot = convertPlaceToSpot(place, stopIntent);
-      
-      // 重複チェック対象を拡張: baseSpots + allCandidates + existingSpots
-      const allSpotsToCheck = [
-        ...baseSpots,
-        ...(options?.allCandidates || []),
-        ...(options?.existingSpots || [])
-      ];
-      
-      // 重複チェック
-      let duplicateOf: any = null;
-      let duplicateReason: "distance<=150" | "name_match" | null = null;
-      let duplicateDistance: number | null = null;
-      
-      // normalizedNew は for ループの外で1回だけ計算
-      const normalizedNew = normalizeName(newSpot.name);
-      
-      for (const existingSpot of allSpotsToCheck) {
-        const hasCoords =
-          existingSpot.lat != null && existingSpot.lng != null &&
-          newSpot.lat != null && newSpot.lng != null;
+    if (places.length > 0) {
+      let added = false;
 
-        if (hasCoords) {
-          const distance = calculateDistance(
-            existingSpot.lat as number,
-            existingSpot.lng as number,
-            newSpot.lat as number,
-            newSpot.lng as number
-          );
+      for (const place of places) {
+        const newSpot = convertPlaceToSpot(place, stopIntent);
 
-          console.log("[koyo-places] Duplicate check (distance)", {
-            newName: newSpot.name,
-            existingName: existingSpot.name,
-            distanceMeters: distance,
-            isDuplicate: distance <= 150
-          });
+        // 重複チェック対象を拡張: baseSpots + allCandidates + existingSpots
+        const allSpotsToCheck = [
+          ...baseSpots,
+          ...(options?.allCandidates || []),
+          ...(options?.existingSpots || [])
+        ];
 
-          if (distance <= 150) {
-            duplicateOf = existingSpot;
-            duplicateReason = "distance<=150";
-            duplicateDistance = distance;
-            break;
+        // 重複チェック
+        let duplicateOf: any = null;
+        let duplicateReason: "distance<=150" | "name_match" | null = null;
+        let duplicateDistance: number | null = null;
+
+        // normalizedNew は for ループの外で1回だけ計算
+        const normalizedNew = normalizeName(newSpot.name);
+
+        for (const existingSpot of allSpotsToCheck) {
+          const hasCoords =
+            existingSpot.lat != null && existingSpot.lng != null &&
+            newSpot.lat != null && newSpot.lng != null;
+
+          if (hasCoords) {
+            const distance = calculateDistance(
+              existingSpot.lat as number,
+              existingSpot.lng as number,
+              newSpot.lat as number,
+              newSpot.lng as number
+            );
+
+            console.log("[koyo-places] Duplicate check (distance)", {
+              newName: newSpot.name,
+              existingName: existingSpot.name,
+              distanceMeters: distance,
+              isDuplicate: distance <= 150
+            });
+
+            if (distance <= 150) {
+              duplicateOf = existingSpot;
+              duplicateReason = "distance<=150";
+              duplicateDistance = distance;
+              break;
+            }
+
+            // 座標がある場合は名前判定はしない（誤爆防止）
+            continue;
           }
 
-          // 座標がある場合は名前判定はしない（誤爆防止）
+          // 座標が揃わない場合のみ名前判定
+          const normalizedExisting = normalizeName(existingSpot.name);
+
+          const nameMatch =
+            normalizedNew === normalizedExisting ||
+            (normalizedNew.length >= 4 && normalizedExisting.length >= 4 &&
+              (normalizedNew.includes(normalizedExisting) || normalizedExisting.includes(normalizedNew)));
+
+          console.log("[koyo-places] Duplicate check (name)", {
+            newName: newSpot.name,
+            existingName: existingSpot.name,
+            normalizedNew: normalizedNew,
+            normalizedExisting: normalizedExisting,
+            isDuplicate: nameMatch
+          });
+
+          if (nameMatch) {
+            duplicateOf = existingSpot;
+            duplicateReason = "name_match";
+            break;
+          }
+        }
+
+        if (duplicateOf) {
+          console.log("[koyo-places] Skipping duplicate place", {
+            newName: newSpot.name,
+            existingName: duplicateOf.name,
+            distanceMeters: duplicateDistance,
+            reason: duplicateReason,
+          });
           continue;
         }
 
-        // 座標が揃わない場合のみ名前判定
-        const normalizedExisting = normalizeName(existingSpot.name);
-
-        const nameMatch =
-          normalizedNew === normalizedExisting ||
-          (normalizedNew.length >= 4 && normalizedExisting.length >= 4 &&
-            (normalizedNew.includes(normalizedExisting) || normalizedExisting.includes(normalizedNew)));
-
-        console.log("[koyo-places] Duplicate check (name)", {
-          newName: newSpot.name,
-          existingName: existingSpot.name,
-          normalizedNew: normalizedNew,
-          normalizedExisting: normalizedExisting,
-          isDuplicate: nameMatch
-        });
-
-        if (nameMatch) {
-          duplicateOf = existingSpot;
-          duplicateReason = "name_match";
-          break;
-        }
-      }
-      
-      if (duplicateOf) {
-        console.log("[koyo-places] Skipping duplicate place", {
-          newName: newSpot.name,
-          existingName: duplicateOf.name,
-          distanceMeters: duplicateDistance,
-          reason: duplicateReason,
-        });
-        // スキップ（placesAdded = false のまま、追加処理はしない）
-      } else {
         console.log("[koyo-places] No duplicate found, adding place", {
           newName: newSpot.name,
           baseSpots: baseSpots.length,
@@ -537,7 +536,17 @@ export async function integratePlaces(
             : 0;
         baseSpots.splice(insertIndex, 0, newSpot);
         placesAdded = true;
-        console.log("[koyo-places] Added place at index:", insertIndex, "name:", place.name, "type:", stopIntent.type, "foodCategory:", stopIntent.foodCategory);
+        added = true;
+        console.log("[koyo-places] Added place (non-duplicate):", {
+          name: newSpot.name,
+          rating: place.rating,
+        });
+        break;
+      }
+
+      if (!added) {
+        console.log("[koyo-places] No non-duplicate place found. Skip adding.");
+        return { spots: baseSpots, placesApiFailed: false, placesAdded: false };
       }
     } else {
       placesApiFailed = true;

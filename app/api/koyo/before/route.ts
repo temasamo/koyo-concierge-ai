@@ -10,12 +10,13 @@ import { normalizeUserSelection } from "@/lib/koyo/text/normalizeUserSelection";
 import { generatePrecheckinPlan } from "@/lib/koyo/precheckin/generatePrecheckinPlan";
 import { resolveOriginFromFreeInput, getOriginFromPrefecture } from "./_utils/originResolver";
 import type { PrefectureKey } from "./_constants/prefEntryPoints";
-import type { OriginInfo } from "@/store/spots";
+import type { OriginInfo, Spot } from "@/store/spots";
 import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 import { detectStopIntent, integratePlaces } from "../_utils/places";
 import { detectStopIntent as detectStopIntentFromUtils } from "../_utils/detectStopIntent";
-import type { RouteInfo, StopIntent } from "@/types/route";
+import type { RouteInfo, StopIntent, RoutePlan } from "@/types/route";
+import { extractSelections } from "../_utils/extractSelections";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -506,6 +507,130 @@ function buildWaypoints(spots: any[]): Array<{ lat: number; lng: number; spotId?
     });
 }
 
+function resolveBeforeRouteOrigin(origin: OriginInfo): { lat: number; lng: number } {
+  if (origin.type === "pref-boundary" && origin.pref) {
+    return getPrefBoundary(origin.pref);
+  }
+  if ((origin.type === "fixed" || origin.type === "current") && origin.lat != null && origin.lng != null) {
+    return { lat: origin.lat, lng: origin.lng };
+  }
+  return KOYO_COORDINATES;
+}
+
+function buildBeforeCandidateList(optionalSpots: Spot[]): string {
+  return optionalSpots
+    .map((s, idx) => {
+      const category = s.category || "観光スポット";
+      const description = s.description ? ` - ${s.description}` : "";
+      return `(${idx + 1}) ${s.name}（${category}）${description}`;
+    })
+    .join("\n");
+}
+
+function buildBeforeCandidateReply(optionalSpots: Spot[]): string {
+  const numberedList = buildBeforeCandidateList(optionalSpots);
+  return `寄り道候補をいくつか出しました。番号で選んでください。
+
+${numberedList}
+
+この中から、経由地として組み込みたい番号を送ってください。
+例：1 / 2 / 1と2
+※「寄り道しない」場合は 0 と送ってください。`;
+}
+
+function buildBeforeNoSelectionReply(optionalSpots: Spot[]): string {
+  const numberedList = buildBeforeCandidateList(optionalSpots);
+  return `選択された番号に対応する候補が見つかりませんでした。以下の番号で選んでください。
+
+${numberedList}
+
+この中から、経由地として組み込みたい番号を送ってください。
+例：1 / 2 / 1と2
+※「寄り道しない」場合は 0 と送ってください。`;
+}
+
+function buildBeforeEmptyCandidatesReply(): string {
+  return "寄り道候補が見つかりませんでした。条件を変えてもう一度お知らせください。";
+}
+
+// --- Before: stopIntentがlunchのとき「食べる系」を先頭に出す（絞り込みはしない） ---
+function isFoodSpotForIntent(spot: any, stopIntent: any): boolean {
+  const cat = String(spot?.category || "").toLowerCase();
+  const name = String(spot?.name || "").toLowerCase();
+
+  if (!stopIntent || stopIntent.type !== "lunch") return false;
+
+  const foodCategory = String(stopIntent.foodCategory || "").toLowerCase(); // 例: "そば"
+  const keywords = [
+    "食", "ランチ", "食べる", "飲食", "レストラン",
+    // foodCategory があるならそれも優先判定に使う
+    ...(foodCategory ? [foodCategory] : []),
+  ];
+
+  return keywords.some((k) => (k && (cat.includes(k) || name.includes(k))));
+}
+
+function sortOptionalSpotsByIntent(optionalSpots: any[], stopIntent: any) {
+  if (!stopIntent || stopIntent.type !== "lunch") return optionalSpots;
+
+  // 安定ソート（元の順序をできるだけ保持）
+  return optionalSpots
+    .map((s, idx) => ({ s, idx, isFood: isFoodSpotForIntent(s, stopIntent) }))
+    .sort((a, b) => {
+      if (a.isFood !== b.isFood) return a.isFood ? -1 : 1; // 食系を先頭
+      return a.idx - b.idx; // 同グループは元順維持
+    })
+    .map((x) => x.s);
+}
+
+function buildOptionalSpots(spots: Spot[], limit = 6): Spot[] {
+  return (spots || []).slice(0, limit).map((spot) => ({
+    ...spot,
+    spotRole: "optional" as const,
+  }));
+}
+
+function hasIntentCategory(spots: any[], stopIntent: StopIntent | null): boolean {
+  if (!stopIntent) return true;
+
+  const cats = (spots || []).map((s) => String(s.category || "").toLowerCase());
+
+  if (stopIntent.type === "lunch") {
+    const foodCategory = String(stopIntent.foodCategory || "").toLowerCase();
+    return cats.some(
+      (c) =>
+        c.includes("食") ||
+        c.includes("ランチ") ||
+        (foodCategory && c.includes(foodCategory))
+    );
+  }
+
+  if (stopIntent.type === "cafe") {
+    return cats.some((c) => c.includes("カフェ") || c.includes("喫茶") || c.includes("甘味"));
+  }
+
+  if (stopIntent.type === "onsen") {
+    return cats.some((c) => c.includes("温泉") || c.includes("風呂") || c.includes("スパ"));
+  }
+
+  if (stopIntent.type === "shop") {
+    return cats.some((c) => c.includes("買") || c.includes("土産") || c.includes("ショップ"));
+  }
+
+  return true;
+}
+
+function buildPlacesOptions(spots: Spot[], stopIntent: StopIntent | null) {
+  const needsFoodPlace =
+    stopIntent?.type === "lunch" && !!stopIntent.foodCategory;
+  const needPlaceForIntent = stopIntent
+    ? needsFoodPlace || !hasIntentCategory(spots, stopIntent)
+    : false;
+  return needPlaceForIntent
+    ? { forceCallPlaces: true, reason: "before:intent_missing" }
+    : { minRequiredCount: 0, forceCallPlaces: false, reason: "before:intent_satisfied" };
+}
+
 /**
  * Places API検索結果が0件の場合、reply内の断定表現を抽象表現に置き換える
  * フェーズ1.5: AIが嘘をつかないように、事実に基づかない断定表現を弱める
@@ -623,6 +748,14 @@ function isGSelectedInHistory(userMessages: ChatCompletionMessageParam[]): boole
   return false;
 }
 
+type BeforeContext = {
+  phase?: "before:phase2_1" | "before:phase2_2_waiting_selection" | "before:phase2_2_done";
+  optionalSpots?: Spot[];
+  routeInfoKey?: "direct";
+  origin?: OriginInfo;
+  stopIntent?: StopIntent | null;
+};
+
 /**
  * リクエストボディの型
  * - messages: chat履歴（フロントが管理）
@@ -630,8 +763,8 @@ function isGSelectedInHistory(userMessages: ChatCompletionMessageParam[]): boole
  * - userState: ユーザーの状態（origin、originInputModeなど）
  */
 type BeforeRequestBody =
-  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo; originInputMode?: "free" | "current_location" } }
-  | { query: string; userState?: { origin?: OriginInfo; originInputMode?: "free" | "current_location" } };
+  | { messages: ChatCompletionMessageParam[]; userState?: { origin?: OriginInfo; originInputMode?: "free" | "current_location"; context?: { before?: BeforeContext } } }
+  | { query: string; userState?: { origin?: OriginInfo; originInputMode?: "free" | "current_location"; context?: { before?: BeforeContext } } };
 
 // デフォルトの origin 値
 const DEFAULT_ORIGIN: OriginInfo = {
@@ -718,6 +851,126 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Phase2-3: Phase2-2 選択確定フェーズ（候補提示済みの場合）
+    const beforeContext = userState.context?.before;
+    if (beforeContext?.optionalSpots && Array.isArray(beforeContext.optionalSpots) && beforeContext.optionalSpots.length > 0) {
+      const optionalSpots = beforeContext.optionalSpots;
+      const selections = extractSelections(userMessage);
+      const normalizedUserMessage = userMessage.trim().toLowerCase();
+      const isReverseCommand =
+        normalizedUserMessage === "順番を逆に" ||
+        normalizedUserMessage === "順番を逆" ||
+        normalizedUserMessage.includes("順番を逆に") ||
+        normalizedUserMessage.includes("reverse") ||
+        normalizedUserMessage.includes("逆");
+
+      if (selections.length === 1 && selections[0] === 0) {
+        const routeOrigin = resolveBeforeRouteOrigin(beforeContext.origin || currentOrigin);
+        const routeInfo: RouteInfo = {
+          origin: routeOrigin,
+          waypoints: [],
+          destination: KOYO_COORDINATES,
+        };
+        const routePlan: RoutePlan = {
+          planId: `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          mode: "BEFORE",
+          origin: routeInfo.origin,
+          destination: routeInfo.destination,
+          spots: [],
+          constraints: {},
+          bCallCount: 0,
+        };
+        return NextResponse.json({
+          reply: "了解です。寄り道なしで古窯へ向かうルートに確定しました。",
+          phase: "before:phase2_2_done",
+          spots: [],
+          routePlan,
+          routeInfo,
+          optionalSpots: optionalSpots,
+          origin: currentOrigin,
+          context: { before: undefined },
+          debug: { branch: "before:phase2_2_done_no_waypoints", phase: "before:phase2_2_done" },
+        });
+      }
+
+      if (isReverseCommand && selections.length === 0) {
+        const reversedOptionalSpots = [...optionalSpots].reverse();
+        return NextResponse.json({
+          reply: buildBeforeCandidateReply(reversedOptionalSpots),
+          phase: "before:phase2_2_waiting_selection",
+          optionalSpots: reversedOptionalSpots,
+          origin: currentOrigin,
+          context: { before: { phase: "before:phase2_2_waiting_selection", optionalSpots: reversedOptionalSpots, origin: currentOrigin, stopIntent: beforeContext.stopIntent } },
+          debug: { branch: "before:phase2_2_waiting_selection_reverse", phase: "before:phase2_2_waiting_selection" },
+        });
+      }
+
+      if (selections.length === 0) {
+        return NextResponse.json({
+          reply: buildBeforeCandidateReply(optionalSpots),
+          phase: "before:phase2_2_waiting_selection",
+          optionalSpots: optionalSpots,
+          origin: currentOrigin,
+          context: { before: { phase: "before:phase2_2_waiting_selection", optionalSpots, origin: currentOrigin, stopIntent: beforeContext.stopIntent } },
+          debug: { branch: "before:phase2_2_waiting_selection", phase: "before:phase2_2_waiting_selection" },
+        });
+      }
+
+      let selectedSpots = selections
+        .map((i) => optionalSpots[i - 1])
+        .filter(Boolean)
+        .filter((spot): spot is Spot => spot !== undefined && spot.lat !== null && spot.lng !== null);
+
+      if (selectedSpots.length === 0) {
+        return NextResponse.json({
+          reply: buildBeforeNoSelectionReply(optionalSpots),
+          phase: "before:phase2_2_waiting_selection",
+          optionalSpots: optionalSpots,
+          origin: currentOrigin,
+          context: { before: { phase: "before:phase2_2_waiting_selection", optionalSpots, origin: currentOrigin, stopIntent: beforeContext.stopIntent } },
+          debug: { branch: "before:phase2_2_waiting_selection", phase: "before:phase2_2_waiting_selection" },
+        });
+      }
+
+      if (isReverseCommand) {
+        selectedSpots = [...selectedSpots].reverse();
+      }
+
+      const waypoints = selectedSpots.map((s) => ({
+        lat: s.lat!,
+        lng: s.lng!,
+        spotId: s.id,
+      }));
+      const routeOrigin = resolveBeforeRouteOrigin(beforeContext.origin || currentOrigin);
+      const routeInfo: RouteInfo = {
+        origin: routeOrigin,
+        waypoints,
+        destination: KOYO_COORDINATES,
+      };
+      const routePlan: RoutePlan = {
+        planId: `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        mode: "BEFORE",
+        origin: routeInfo.origin,
+        destination: routeInfo.destination,
+        spots: selectedSpots,
+        constraints: {},
+        bCallCount: 0,
+      };
+
+      const selectedSpotList = selectedSpots.map((s) => s.name).join("、");
+      return NextResponse.json({
+        reply: `了解です。${selectedSpotList}を経由地として確定し、ルートを更新しました。`,
+        phase: "before:phase2_2_done",
+        spots: selectedSpots,
+        routePlan,
+        routeInfo,
+        optionalSpots: optionalSpots,
+        origin: currentOrigin,
+        context: { before: undefined },
+        debug: { branch: "before:phase2_2_done", phase: "before:phase2_2_done" },
+      });
+    }
+
     const isPreCheckinIntent = detectPreCheckinIntent(userMessage);
     // ユーザー選択入力を正規化してからパース
     const userMessageNormalized = normalizeUserSelection(userMessage);
@@ -782,60 +1035,38 @@ export async function POST(req: NextRequest) {
         // チャット履歴から最初のStopIntentを含むメッセージを探す
         const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
         const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
-        const result = await integratePlaces(finalSpots, stopIntent, originForPlan, KOYO_COORDINATES);
+        const result = await integratePlaces(
+          finalSpots,
+          stopIntent,
+          originForPlan,
+          KOYO_COORDINATES,
+          buildPlacesOptions(finalSpots, stopIntent)
+        );
         finalSpots = result.spots;
-        const placesApiFailed = result.placesApiFailed;
-        const placesAdded = result.placesAdded;
-
-        // routeInfo を構築（origin/waypoints/destination）
-        let routeOrigin: { lat: number; lng: number };
-        if (currentOrigin.type === "pref-boundary" && currentOrigin.pref) {
-          const prefBoundary = getPrefBoundary(currentOrigin.pref);
-          routeOrigin = prefBoundary;
-        } else {
-          routeOrigin = {
-            lat: currentOrigin.lat as number,
-            lng: currentOrigin.lng as number,
-          };
-        }
-
-        const waypoints = buildWaypoints(finalSpots);
-
-        const destination = KOYO_COORDINATES;
-        const routeInfo: RouteInfo = {
-          origin: routeOrigin,
-          waypoints,
-          destination,
-        };
-
-        // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
-        let reply = plan.reply || "";
-        
-        // 体験コメントを追記（placesAdded === true の場合のみ）
-        if (placesAdded && stopIntent) {
-          const experienceComment = appendExperienceComment(stopIntent, placesAdded);
-          if (experienceComment) {
-            reply += " " + experienceComment;
-          }
-        }
-        
-        // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
-        if (placesApiFailed && stopIntent) {
-          reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
-        }
+        let optionalSpots = buildOptionalSpots(finalSpots);
+        optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
+        const reply = buildBeforeCandidateReply(optionalSpots);
 
         // ✅ Pre-Checkin 時だけ origin を返す
         // originInputMode が "current_location" の場合は削除（現在地確定完了を意味する）
         const responseOriginInputMode = originInputMode === "current_location" ? undefined : originInputMode;
         
         return NextResponse.json({
-          ...plan,
-          spots: finalSpots,
           reply,
           origin: currentOrigin,
-          routeInfo,
+          optionalSpots,
+          phase: "before:phase2_2_waiting_selection",
+          context: {
+            before: {
+              phase: "before:phase2_2_waiting_selection",
+              optionalSpots,
+              routeInfoKey: "direct",
+              origin: currentOrigin,
+              stopIntent,
+            },
+          },
           ...(responseOriginInputMode !== undefined && { originInputMode: responseOriginInputMode }),
-          debug: { branch: "before:A_precheckin_plan" },
+          debug: { branch: "before:phase2_1_candidates" },
         });
       } catch (error: any) {
         console.error("[koyo-before] ❌ BRANCH: A_precheckin_plan ERROR:", error);
@@ -919,48 +1150,41 @@ G. その他（自由入力）
           // チャット履歴から最初のStopIntentを含むメッセージを探す
           const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
           const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
-          const result = await integratePlaces(finalSpots, stopIntent, originSelection, KOYO_COORDINATES);
+          const result = await integratePlaces(
+            finalSpots,
+            stopIntent,
+            originSelection,
+            KOYO_COORDINATES,
+            buildPlacesOptions(finalSpots, stopIntent)
+          );
           finalSpots = result.spots;
-          const placesApiFailed = result.placesApiFailed;
-          const placesAdded = result.placesAdded;
 
-          const waypoints = buildWaypoints(finalSpots);
-
-          // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
-          let reply = plan.reply || "";
-          
-          // 体験コメントを追記（placesAdded === true の場合のみ）
-          if (placesAdded && stopIntent) {
-            const experienceComment = appendExperienceComment(stopIntent, placesAdded);
-            if (experienceComment) {
-              reply += " " + experienceComment;
-            }
-          }
-          
-          // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
-          if (placesApiFailed && stopIntent) {
-            reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
-          }
-
-          const routeInfo: RouteInfo = {
-            origin: { lat: originSelection.lat, lng: originSelection.lng },
-            waypoints,
-            destination: KOYO_COORDINATES,
-          };
+          const originResponse = {
+            type: "fixed",
+            pref: null,
+            name: originSelection.name,
+            lat: originSelection.lat,
+            lng: originSelection.lng,
+          } as OriginInfo;
+          let optionalSpots = buildOptionalSpots(finalSpots);
+          optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
+          const reply = buildBeforeCandidateReply(optionalSpots);
 
           return NextResponse.json({
-            ...plan,
-            spots: finalSpots,
             reply,
-            origin: {
-              type: "fixed",
-              pref: null,
-              name: originSelection.name,
-              lat: originSelection.lat,
-              lng: originSelection.lng,
-            } as OriginInfo,
-            routeInfo,
-            debug: { branch: "before:C_origin_selected" },
+            origin: originResponse,
+            optionalSpots,
+            phase: "before:phase2_2_waiting_selection",
+            context: {
+              before: {
+                phase: "before:phase2_2_waiting_selection",
+                optionalSpots,
+                routeInfoKey: "direct",
+                origin: originResponse,
+                stopIntent,
+              },
+            },
+            debug: { branch: "before:phase2_1_candidates" },
           });
         } catch (error: any) {
           console.error("[koyo-before] ❌ BRANCH: C_origin_selected ERROR:", error);
@@ -1053,29 +1277,15 @@ G. その他（自由入力）
           // チャット履歴から最初のStopIntentを含むメッセージを探す
           const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
           const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
-          const result = await integratePlaces(finalSpots, stopIntent, resolution.origin, KOYO_COORDINATES);
+          const result = await integratePlaces(
+            finalSpots,
+            stopIntent,
+            resolution.origin,
+            KOYO_COORDINATES,
+            buildPlacesOptions(finalSpots, stopIntent)
+          );
           finalSpots = result.spots;
-          const placesApiFailed = result.placesApiFailed;
-          const placesAdded = result.placesAdded;
-
           const prefBoundary = getPrefBoundary(resolution.prefecture);
-          const waypoints = buildWaypoints(finalSpots);
-
-          // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
-          let reply = plan.reply || "";
-          
-          // 体験コメントを追記（placesAdded === true の場合のみ）
-          if (placesAdded && stopIntent) {
-            const experienceComment = appendExperienceComment(stopIntent, placesAdded);
-            if (experienceComment) {
-              reply += " " + experienceComment;
-            }
-          }
-          
-          // Places API検索が失敗した場合、reply内の断定表現を抽象表現に置き換える
-          if (placesApiFailed && stopIntent) {
-            reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
-          }
 
           const originResponse: OriginInfo = {
             type: "pref-boundary",
@@ -1088,26 +1298,31 @@ G. その他（自由入力）
           console.log("[koyo-before] Returning resolved origin:", {
             origin: originResponse,
             prefBoundary,
-            waypointsCount: waypoints.length,
             spotsCount: finalSpots.length,
           });
 
-          const routeInfo: RouteInfo = {
-            origin: prefBoundary,
-            waypoints,
-            destination: KOYO_COORDINATES,
-          };
+          let optionalSpots = buildOptionalSpots(finalSpots);
+          optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
+          const reply = buildBeforeCandidateReply(optionalSpots);
 
           // originが確定した時点でoriginInputModeを削除（リセット）
           // originInputModeを含めない = フロントエンド側で削除される
           return NextResponse.json({
-            ...plan,
-            spots: finalSpots,
             reply,
             origin: originResponse,
-            routeInfo,
+            optionalSpots,
+            phase: "before:phase2_2_waiting_selection",
+            context: {
+              before: {
+                phase: "before:phase2_2_waiting_selection",
+                optionalSpots,
+                routeInfoKey: "direct",
+                origin: originResponse,
+                stopIntent,
+              },
+            },
             // originInputModeは含めない（削除を意味する）
-            debug: { branch: "before:D_free_input_resolved" },
+            debug: { branch: "before:phase2_1_candidates" },
           });
         } catch (error: any) {
           console.error("[koyo-before] ❌ BRANCH: D_free_input_resolve ERROR:", error);
@@ -1280,7 +1495,8 @@ G. その他（自由入力）
         currentOrigin && currentOrigin.lat && currentOrigin.lng
           ? { lat: currentOrigin.lat, lng: currentOrigin.lng }
           : KOYO_COORDINATES,
-        destinationCoords
+        destinationCoords,
+        buildPlacesOptions(matchedSpots || [], stopIntent)
       );
       
       matchedSpots = result.spots;
@@ -1306,7 +1522,13 @@ G. その他（自由入力）
     // stopIntentが定義されている場合のみintegratePlacesを呼ぶ（Eセクションで既に呼んでいる場合はスキップ）
     let finalSpots: any[] | undefined = matchedSpots;
     if (stopIntent) {
-      const result = await integratePlaces(baseSpots, stopIntent, originForPlaces, KOYO_COORDINATES);
+      const result = await integratePlaces(
+        baseSpots,
+        stopIntent,
+        originForPlaces,
+        KOYO_COORDINATES,
+        buildPlacesOptions(baseSpots, stopIntent)
+      );
       
       // Eセクションで取得したplacesApiFailedとplacesAddedを上書き（finalSpotsが更新された場合）
       if (result.spots && result.spots.length > 0) {
@@ -1341,67 +1563,28 @@ G. その他（自由入力）
       : false;
     console.log("[koyo-before] Cleaned reply contains spot names:", hasSpotNames);
 
-    // レスポンスを構築
+    let optionalSpots = buildOptionalSpots(finalSpots || []);
+    optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
+    const candidateReply =
+      optionalSpots.length > 0 ? buildBeforeCandidateReply(optionalSpots) : buildBeforeEmptyCandidatesReply();
+    
     const response: any = {
-      reply: cleanReply,
-      usage: completion.usage,
+      reply: candidateReply,
+      origin: aiOrigin || DEFAULT_ORIGIN,
+      optionalSpots,
+      phase: "before:phase2_2_waiting_selection",
+      context: {
+        before: {
+          phase: "before:phase2_2_waiting_selection",
+          optionalSpots,
+          routeInfoKey: "direct",
+          origin: aiOrigin || DEFAULT_ORIGIN,
+          stopIntent,
+        },
+      },
     };
-
-    // planがある場合のみ追加
-    // @ts-ignore - TypeScriptの型チェックが厳しすぎるため、型アサーションを使用
-    if (finalPlan != null && Array.isArray(finalPlan) && finalPlan.length > 0) {
-      response.plan = finalPlan;
-    }
-
-    // フロントエンド互換性のため、統合後のspotsを返す
-    // finalSpotsは既に1204-1225行目で定義済み
-    if (finalSpots != null && Array.isArray(finalSpots) && finalSpots.length > 0) {
-      response.spots = finalSpots;
-    }
-
-    // すべてのレスポンスに origin を含める
-    // AIの返答に origin が含まれている場合はそれを使用、そうでなければ DEFAULT_ORIGIN
-    response.origin = aiOrigin || DEFAULT_ORIGIN;
-
-    // routeInfo を構築
-    // AIの返答に origin 情報が含まれている場合はそれを使用、そうでなければ古窯固定
-    let routeOrigin: { lat: number; lng: number } = KOYO_COORDINATES;
     
-    if (aiOrigin && aiOrigin.type === "pref-boundary" && aiOrigin.pref) {
-      // 県境の場合は県境座標を使用
-      const prefBoundary = getPrefBoundary(aiOrigin.pref as PrefectureKey);
-      routeOrigin = prefBoundary;
-      console.log("[koyo-before] Using pref-boundary origin:", routeOrigin);
-    } else if (aiOrigin && (aiOrigin.type === "fixed" || aiOrigin.type === "current") && aiOrigin.lat && aiOrigin.lng) {
-      // 固定地点または現在地の場合はその座標を使用
-      routeOrigin = {
-        lat: aiOrigin.lat,
-        lng: aiOrigin.lng,
-      };
-      console.log("[koyo-before] Using fixed/current origin:", routeOrigin);
-    } else {
-      console.log("[koyo-before] Using default Koyo origin");
-    }
-
-    const waypoints = buildWaypoints(finalSpots || []);
-
-    const routeInfo: RouteInfo = {
-      origin: routeOrigin,
-      waypoints,
-      destination: KOYO_COORDINATES,
-    };
-    response.routeInfo = routeInfo;
-    
-    // デバッグログ：routeInfoの内容を確認
-    console.log("[koyo-before] routeInfo constructed:", {
-      origin: response.routeInfo.origin,
-      destination: response.routeInfo.destination,
-      waypointsCount: response.routeInfo.waypoints.length,
-      waypoints: response.routeInfo.waypoints,
-      containsZawaoOkama: finalSpots?.some((s: any) => s.id === "b916a6f4-7225-42df-800a-a48f5f030da0"),
-    });
-
-    response.debug = { branch: "before:E_normal_before_plan" };
+    response.debug = { branch: "before:phase2_1_candidates" };
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("[koyo-before] ❌ BRANCH: UNHANDLED_ERROR:", error);
