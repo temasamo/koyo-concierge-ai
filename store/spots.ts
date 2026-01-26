@@ -1,6 +1,6 @@
 // store/spots.ts
 import { create } from "zustand";
-import type { RouteLegInfo, RoutePlan } from "@/types/route";
+import type { RouteInfo, RouteLegInfo, RoutePlan } from "@/types/route";
 
 // /api/spots/search のレスポンス形式に合わせたSpot型
 export type Spot = {
@@ -34,14 +34,6 @@ export type OriginInfo = {
   lat: number | null;
   lng: number | null;
   name?: string | null; // オプショナル（fixed タイプの場合のみ使用）
-};
-
-import type { WaypointInfo } from "@/types/route";
-
-export type RouteInfo = {
-  origin: { lat: number; lng: number };
-  waypoints: WaypointInfo[];
-  destination: { lat: number; lng: number };
 };
 
 type SpotStore = {

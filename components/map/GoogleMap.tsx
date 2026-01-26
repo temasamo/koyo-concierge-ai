@@ -1,11 +1,11 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { loadGoogleMaps } from "./MapLoader";
-import type { Spot, OriginInfo, RouteInfo } from "@/store/spots";
+import type { Spot, OriginInfo } from "@/store/spots";
 import { useSpotStore } from "@/store/spots";
 import { getPrefBoundary, type PrefectureKey } from "@/store/prefBoundaries";
 import { getDefaultEntryPoint } from "@/app/api/koyo/before/_constants/prefEntryPoints";
-import type { RouteLegInfo, RoutePoint, KoyoMode, WaypointInfo } from "@/types/route";
+import type { RouteInfo, RouteLegInfo, RoutePoint, KoyoMode, WaypointInfo } from "@/types/route";
 import { KOYO_COORDINATES } from "@/constants/koyo";
 import RouteList from "./RouteList";
 
@@ -512,7 +512,7 @@ export default function GoogleMap({
       origin,
       routeInfoOrigin: currentRouteInfo.origin,
     });
-    
+
     // routeInfo.originが存在し、originが設定されていない場合、routeInfo.originを優先する
     // Beforeモードで県境が設定されている場合、routeInfo.originに正しい座標が含まれている
     if (currentRouteInfo.origin && !hasPrefBoundary && !hasFixedOrigin && !hasCurrentOrigin) {
@@ -992,7 +992,7 @@ export default function GoogleMap({
       origin: routeOrigin,
       destination: routeDestination,
       waypoints: directionsWaypoints,
-      travelMode: google.maps.TravelMode.DRIVING,
+        travelMode: google.maps.TravelMode.DRIVING,
     };
 
     // routePoints を生成（Directions API呼び出し前に生成）
@@ -1299,7 +1299,7 @@ export default function GoogleMap({
           console.warn("[GoogleMap] InfoWindow: spot not found for spotId:", point.spotId, {
             markerIds: markers.map(s => s.id),
             planSpotIds: useSpotStore.getState().routePlan?.spots?.map(s => s.id) || [],
-          });
+        });
         }
       }
 
@@ -1338,7 +1338,7 @@ export default function GoogleMap({
         infoWindowsRef.current.push(infoWindow);
       }
 
-      newMarkers.push(marker);
+        newMarkers.push(marker);
       bounds.extend(point.location);
       });
 

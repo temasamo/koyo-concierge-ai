@@ -7,6 +7,12 @@ export type WaypointInfo = {
   spotId?: string;
 };
 
+export type RouteInfo = {
+  origin: { lat: number; lng: number };
+  destination: { lat: number; lng: number };
+  waypoints: WaypointInfo[];
+};
+
 export type RouteLegInfo = {
   index: number;               // 0,1,2,... （UIでは ①②③ 表示）
   fromName: string;            // 出発地名（例：日本の宿 古窯）

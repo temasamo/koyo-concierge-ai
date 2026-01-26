@@ -15,7 +15,7 @@ import { normalizeUserSelection } from "@/lib/koyo/text/normalizeUserSelection";
 import type { PrefectureKey } from "../before/_constants/prefEntryPoints";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 import type { OriginInfo, Spot } from "@/store/spots";
-import type { StopIntent } from "@/types/route";
+import type { RouteInfo, StopIntent } from "@/types/route";
 import { parseAfterDestination } from "@/lib/koyo/after/destination";
 import { detectModeMismatch } from "@/lib/koyo/intents";
 
@@ -681,7 +681,7 @@ type AfterContext = {
   optionalSpots?: Spot[]; // Phase2-1で保持した候補
   spots?: Spot[]; // Phase2-2で確定した経由地（順番変更用）
   routeInfoKey?: "direct"; // 直行ルートを意味するフラグ
-  routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number; spotId?: string }>; destination: { lat: number; lng: number } } | null; // 後方互換性のため追加
+  routeInfo?: RouteInfo | null; // 後方互換性のため追加
   origin?: { lat: number; lng: number };
   destination?: { lat: number; lng: number };
 };
@@ -695,7 +695,7 @@ type AfterRequestBody =
         originInputMode?: "free" | "current_location" | undefined;
         routePlanId?: string | null;
         spots?: Spot[];
-        routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number; spotId?: string }>; destination: { lat: number; lng: number } } | null;
+        routeInfo?: RouteInfo | null;
         context?: { after?: AfterContext } 
       } 
     }
@@ -707,7 +707,7 @@ type AfterRequestBody =
         originInputMode?: "free" | "current_location" | undefined;
         routePlanId?: string | null;
         spots?: Spot[];
-        routeInfo?: { origin: { lat: number; lng: number }; waypoints: Array<{ lat: number; lng: number; spotId?: string }>; destination: { lat: number; lng: number } } | null;
+        routeInfo?: RouteInfo | null;
         context?: { after?: AfterContext } 
       } 
     };
@@ -995,7 +995,7 @@ export async function POST(req: NextRequest) {
           // 直行ルートのrouteInfoを生成（Phase2-1と同じ形式）
           // 注意: Directions APIはフロント側で呼ばれるため、API側は{ origin, waypoints, destination }のみ返す
           // フロント側がDirections APIを呼んで完全形（distance/duration/legs/polyline等）を生成する
-          const directRouteInfo = {
+          const directRouteInfo: RouteInfo = {
             origin: afterContext.origin,
             waypoints: [], // 空配列（直行ルート）
             destination: afterContext.destination,
@@ -1130,6 +1130,12 @@ ${numberedList}
         })
         .join("、");
       
+      const routeInfo: RouteInfo = {
+        origin: routeOrigin,
+        waypoints: waypoints,
+        destination: routeDestination,
+      };
+
       const response: any = {
         reply: `了解です。${selectedSpotList}を経由地として組み込み、ルートを更新しました。
 
@@ -1137,11 +1143,7 @@ ${numberedList}
         phase: "after:phase2_2_done",
         spots: selectedSpots, // 確定経由地のみ
         optionalSpots: optionalSpots, // 候補は残す
-        routeInfo: {
-          origin: routeOrigin,
-          waypoints: waypoints,
-          destination: routeDestination,
-        },
+        routeInfo,
         destination: hasDestination ? currentDestination : undefined,
         debug: { branch: "after:phase2_2_done", phase: "after:phase2_2_done" },
       };
@@ -1914,11 +1916,12 @@ ${numberedList}
 
     // Phase2-1: waypoints を空配列に固定（matchedSpots は候補として扱い、ルートに含めない）
     // 既存の matchedSpots → waypoints 変換処理（1230-1264行目付近）は Phase2-1 では使用しない
-    response.routeInfo = {
+    const routeInfo: RouteInfo = {
       origin: KOYO_COORDINATES,
       waypoints: [], // Phase2-1: optionalは含めない
       destination: routeDestination,
     };
+    response.routeInfo = routeInfo;
 
     // destination を返す（フロントエンドで保持するため）
     // hasDestination が true の場合、currentDestination を返す
@@ -1996,11 +1999,12 @@ ${numberedList}
     if (!response.routeInfo) {
       console.error("[koyo-after] ERROR: routeInfo is not set!");
       // フォールバック: 最低限のrouteInfoを設定
-      response.routeInfo = {
+      const fallbackRouteInfo: RouteInfo = {
         origin: KOYO_COORDINATES,
         waypoints: [],
         destination: KOYO_COORDINATES,
       };
+      response.routeInfo = fallbackRouteInfo;
     }
 
     response.debug = { branch: "after:A_plan_generation" };

@@ -15,7 +15,7 @@ import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 import { detectStopIntent, integratePlaces } from "../_utils/places";
 import { detectStopIntent as detectStopIntentFromUtils } from "../_utils/detectStopIntent";
-import type { StopIntent } from "@/types/route";
+import type { RouteInfo, StopIntent } from "@/types/route";
 
 // モデルは環境変数で差し替え可能
 const CHAT_MODEL =
@@ -802,6 +802,11 @@ export async function POST(req: NextRequest) {
         const waypoints = buildWaypoints(finalSpots);
 
         const destination = KOYO_COORDINATES;
+        const routeInfo: RouteInfo = {
+          origin: routeOrigin,
+          waypoints,
+          destination,
+        };
 
         // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
         let reply = plan.reply || "";
@@ -828,11 +833,7 @@ export async function POST(req: NextRequest) {
           spots: finalSpots,
           reply,
           origin: currentOrigin,
-          routeInfo: {
-            origin: routeOrigin,
-            waypoints,
-            destination,
-          },
+          routeInfo,
           ...(responseOriginInputMode !== undefined && { originInputMode: responseOriginInputMode }),
           debug: { branch: "before:A_precheckin_plan" },
         });
@@ -941,6 +942,12 @@ G. その他（自由入力）
             reply = sanitizeReplyForFailedPlaces(reply, stopIntent);
           }
 
+          const routeInfo: RouteInfo = {
+            origin: { lat: originSelection.lat, lng: originSelection.lng },
+            waypoints,
+            destination: KOYO_COORDINATES,
+          };
+
           return NextResponse.json({
             ...plan,
             spots: finalSpots,
@@ -952,11 +959,7 @@ G. その他（自由入力）
               lat: originSelection.lat,
               lng: originSelection.lng,
             } as OriginInfo,
-            routeInfo: {
-              origin: { lat: originSelection.lat, lng: originSelection.lng },
-              waypoints,
-              destination: KOYO_COORDINATES,
-            },
+            routeInfo,
             debug: { branch: "before:C_origin_selected" },
           });
         } catch (error: any) {
@@ -1089,6 +1092,12 @@ G. その他（自由入力）
             spotsCount: finalSpots.length,
           });
 
+          const routeInfo: RouteInfo = {
+            origin: prefBoundary,
+            waypoints,
+            destination: KOYO_COORDINATES,
+          };
+
           // originが確定した時点でoriginInputModeを削除（リセット）
           // originInputModeを含めない = フロントエンド側で削除される
           return NextResponse.json({
@@ -1096,11 +1105,7 @@ G. その他（自由入力）
             spots: finalSpots,
             reply,
             origin: originResponse,
-            routeInfo: {
-              origin: prefBoundary,
-              waypoints,
-              destination: KOYO_COORDINATES,
-            },
+            routeInfo,
             // originInputModeは含めない（削除を意味する）
             debug: { branch: "before:D_free_input_resolved" },
           });
@@ -1380,11 +1385,12 @@ G. その他（自由入力）
 
     const waypoints = buildWaypoints(finalSpots || []);
 
-    response.routeInfo = {
+    const routeInfo: RouteInfo = {
       origin: routeOrigin,
       waypoints,
       destination: KOYO_COORDINATES,
     };
+    response.routeInfo = routeInfo;
     
     // デバッグログ：routeInfoの内容を確認
     console.log("[koyo-before] routeInfo constructed:", {
