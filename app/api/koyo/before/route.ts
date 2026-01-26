@@ -469,6 +469,43 @@ function cleanReplyMessage(reply: string): string {
   return cleaned.replace(/--/g, "").trim();
 }
 
+function buildWaypoints(spots: any[]): Array<{ lat: number; lng: number; spotId?: string }> {
+  if (!spots || spots.length === 0) {
+    return [];
+  }
+
+  return spots
+    .filter((s: any) => {
+      if (!s || s.lat == null || s.lng == null) {
+        return false;
+      }
+      const lat = Number(s.lat);
+      const lng = Number(s.lng);
+      const isValid =
+        typeof lat === "number" &&
+        typeof lng === "number" &&
+        !isNaN(lat) &&
+        !isNaN(lng) &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lng >= -180 &&
+        lng <= 180;
+      if (!isValid) {
+        console.warn(`[koyo-before] Invalid coordinates for spot "${s.name}" (${s.id}): lat=${s.lat}, lng=${s.lng}`);
+      }
+      return isValid;
+    })
+    .map((s: any) => {
+      const lat = Number(s.lat);
+      const lng = Number(s.lng);
+      return {
+        lat,
+        lng,
+        spotId: s.id,
+      };
+    });
+}
+
 /**
  * Places API検索結果が0件の場合、reply内の断定表現を抽象表現に置き換える
  * フェーズ1.5: AIが嘘をつかないように、事実に基づかない断定表現を弱める
@@ -762,12 +799,7 @@ export async function POST(req: NextRequest) {
           };
         }
 
-        const waypoints =
-          finalSpots.length > 0
-            ? finalSpots
-                .filter((s: any) => s.lat != null && s.lng != null)
-                .map((s: any) => ({ lat: s.lat, lng: s.lng }))
-            : [];
+        const waypoints = buildWaypoints(finalSpots);
 
         const destination = KOYO_COORDINATES;
 
@@ -891,12 +923,7 @@ G. その他（自由入力）
           const placesApiFailed = result.placesApiFailed;
           const placesAdded = result.placesAdded;
 
-          const waypoints =
-            finalSpots.length > 0
-              ? finalSpots
-                  .filter((s: any) => s.lat != null && s.lng != null)
-                  .map((s: any) => ({ lat: s.lat, lng: s.lng }))
-              : [];
+          const waypoints = buildWaypoints(finalSpots);
 
           // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
           let reply = plan.reply || "";
@@ -1029,12 +1056,7 @@ G. その他（自由入力）
           const placesAdded = result.placesAdded;
 
           const prefBoundary = getPrefBoundary(resolution.prefecture);
-          const waypoints =
-            finalSpots.length > 0
-              ? finalSpots
-                  .filter((s: any) => s.lat != null && s.lng != null)
-                  .map((s: any) => ({ lat: s.lat, lng: s.lng }))
-              : [];
+          const waypoints = buildWaypoints(finalSpots);
 
           // replyはAIが生成したものをそのまま使用（Places API結果は追記しない）
           let reply = plan.reply || "";
@@ -1325,7 +1347,7 @@ G. その他（自由入力）
     if (finalPlan != null && Array.isArray(finalPlan) && finalPlan.length > 0) {
       response.plan = finalPlan;
     }
-    
+
     // フロントエンド互換性のため、統合後のspotsを返す
     // finalSpotsは既に1204-1225行目で定義済み
     if (finalSpots != null && Array.isArray(finalSpots) && finalSpots.length > 0) {
@@ -1356,41 +1378,7 @@ G. その他（自由入力）
       console.log("[koyo-before] Using default Koyo origin");
     }
 
-    const waypoints =
-      finalSpots && Array.isArray(finalSpots)
-        ? finalSpots
-            .filter((s: any) => {
-              // 座標の型と値の検証を強化
-              const isValid = 
-                s.lat != null && 
-                s.lng != null &&
-                typeof s.lat === "number" &&
-                typeof s.lng === "number" &&
-                !isNaN(s.lat) &&
-                !isNaN(s.lng) &&
-                s.lat >= -90 && s.lat <= 90 &&
-                s.lng >= -180 && s.lng <= 180;
-              
-              if (!isValid) {
-                console.warn(`[koyo-before] Invalid coordinates for spot "${s.name}" (${s.id}): lat=${s.lat}, lng=${s.lng}`);
-              }
-              
-              return isValid;
-            })
-            .map((s: any) => {
-              // 座標を数値型に明示的に変換
-              const lat = Number(s.lat);
-              const lng = Number(s.lng);
-              
-              // 蔵王お釜のIDをチェック（デバッグ用）
-              const zawaoOkamaId = "b916a6f4-7225-42df-800a-a48f5f030da0";
-              if (s.id === zawaoOkamaId) {
-                console.log(`[koyo-before] Zawao Okama waypoint: lat=${lat}, lng=${lng}, type: lat=${typeof lat}, lng=${typeof lng}`);
-              }
-              
-              return { lat, lng };
-            })
-        : [];
+    const waypoints = buildWaypoints(finalSpots || []);
 
     response.routeInfo = {
       origin: routeOrigin,
