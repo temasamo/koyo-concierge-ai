@@ -599,3 +599,5 @@ function extractSelectedSpotIds(reply: string, candidateIds: string[]): string[]
 
 
 
+
+
