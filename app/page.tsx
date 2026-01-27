@@ -191,6 +191,25 @@ export default function Page() {
                 };
               })()
             : {}),
+          ...(mode === "before"
+            ? (() => {
+                const currentOptionalSpots = store.optionalSpots;
+                const phase =
+                  currentOptionalSpots.length > 0
+                    ? "before:phase2_2_waiting_selection"
+                    : "before:phase2_1";
+                return {
+                  context: {
+                    before: {
+                      phase,
+                      optionalSpots: currentOptionalSpots,
+                      routeInfoKey: "direct",
+                      origin: params.userState.origin,
+                    },
+                  },
+                };
+              })()
+            : {}),
         },
       };
       
@@ -235,8 +254,29 @@ export default function Page() {
         clearDestination();
       }
       
+      const isBeforeCandidate =
+        mode === "before" &&
+        data.phase === "before:phase2_2_waiting_selection" &&
+        data.optionalSpots &&
+        Array.isArray(data.optionalSpots);
+
+      const isBeforeConfirmed =
+        mode === "before" && data.phase === "before:phase2_2_done";
+
       // Phase2-2.5: レスポンス適用をapplyRouteUpdateに統一
-      if (mode === "after" && data.phase === "after:phase2_2_done") {
+      if (isBeforeConfirmed) {
+        applyRouteUpdate({
+          routeInfo: data.routeInfo || null,
+          routePlan: data.routePlan || null,
+          spots: (data.routePlan?.spots ?? (Array.isArray(data.spots) ? data.spots : undefined)) as Spot[] | undefined,
+          optionalSpots: [],
+        });
+        console.log("[page.tsx] sendMessageWithUserState Phase2-2 (before): Applied route update");
+      } else if (isBeforeCandidate) {
+        setOptionalSpots(data.optionalSpots);
+        setSpots(data.optionalSpots);
+        console.log("[page.tsx] sendMessageWithUserState Phase2-1 (before): Updated optionalSpots");
+      } else if (mode === "after" && data.phase === "after:phase2_2_done") {
         console.log("[page.tsx] sendMessageWithUserState Phase2-2: Processing phase2_2_done response");
         
         // Phase2-2（確定/順番入替/削除）: spots + routePlan + routeInfo を同一 applyRouteUpdate で同時更新
@@ -441,6 +481,25 @@ export default function Page() {
                     };
                   })()
                 : {}),
+              ...(mode === "before"
+                ? (() => {
+                    const currentOptionalSpots = store.optionalSpots;
+                    const phase =
+                      currentOptionalSpots.length > 0
+                        ? "before:phase2_2_waiting_selection"
+                        : "before:phase2_1";
+                    return {
+                      context: {
+                        before: {
+                          phase,
+                          optionalSpots: currentOptionalSpots,
+                          routeInfoKey: "direct",
+                          origin: currentOrigin,
+                        },
+                      },
+                    };
+                  })()
+                : {}),
             },
           };
       
@@ -569,8 +628,29 @@ export default function Page() {
         clearDestination();
       }
 
+      const isBeforeCandidate =
+        mode === "before" &&
+        data.phase === "before:phase2_2_waiting_selection" &&
+        data.optionalSpots &&
+        Array.isArray(data.optionalSpots);
+
+      const isBeforeConfirmed =
+        mode === "before" && data.phase === "before:phase2_2_done";
+
       // Phase2-2.5: レスポンス適用をapplyRouteUpdateに統一
-      if (mode === "after" && data.phase === "after:phase2_2_done") {
+      if (isBeforeConfirmed) {
+        applyRouteUpdate({
+          routeInfo: data.routeInfo || null,
+          routePlan: data.routePlan || null,
+          spots: (data.routePlan?.spots ?? (Array.isArray(data.spots) ? data.spots : undefined)) as Spot[] | undefined,
+          optionalSpots: [],
+        });
+        console.log("[page.tsx] Phase2-2 (before): Applied route update");
+      } else if (isBeforeCandidate) {
+        setOptionalSpots(data.optionalSpots);
+        setSpots(data.optionalSpots);
+        console.log("[page.tsx] Phase2-1 (before): Updated optionalSpots");
+      } else if (mode === "after" && data.phase === "after:phase2_2_done") {
         console.log("[page.tsx] Phase2-2: Processing phase2_2_done response");
         
         // Phase2-2（確定/順番入替/削除）: spots + routePlan + routeInfo を同一 applyRouteUpdate で同時更新
@@ -684,22 +764,22 @@ export default function Page() {
       // そのまま useSpotStore.setSpots() に渡す。
       // ============================================================
       
-      // ============================================================
+        // ============================================================
       // スポット配列の受け取り処理（legacy）
-      // ============================================================
+        // ============================================================
       // NOTE:
       // - Afterモードは Phase2-2.5 で applyRouteUpdate に統一済み。
       // - Afterの data.spots は Phase2-1では optionalSpots（候補）であり、ここで setSpots/clearSpots すると
       //   「確定spotsの消去 → GoogleMapのガードが作動 → ルートが出ない」が発生する。
       if (mode !== "after") {
         if (data.spots && Array.isArray(data.spots) && data.spots.length > 0) {
-          const firstSpot = data.spots[0];
-          const hasSupabaseFormat = (
-            Array.isArray(data.spots) &&
-            firstSpot?.id &&
-            (firstSpot.lat !== undefined && firstSpot.lng !== undefined) &&
-            (firstSpot.city !== undefined || firstSpot.drive_minutes !== undefined)
-          );
+        const firstSpot = data.spots[0];
+        const hasSupabaseFormat = (
+          Array.isArray(data.spots) &&
+          firstSpot?.id &&
+          (firstSpot.lat !== undefined && firstSpot.lng !== undefined) &&
+          (firstSpot.city !== undefined || firstSpot.drive_minutes !== undefined)
+        );
 
           console.log("[page.tsx] Format check:", {
             isArray: Array.isArray(data.spots),
@@ -710,7 +790,7 @@ export default function Page() {
             hasDriveMinutes: firstSpot?.drive_minutes !== undefined,
             firstSpot: firstSpot,
             hasSupabaseFormat,
-          });
+            });
 
           if (hasSupabaseFormat) {
             console.log("[page.tsx] Received Supabase format spots:", data.spots.length);
@@ -726,7 +806,7 @@ export default function Page() {
 
       // ④ AI の返答を追加
       if (data.reply) {
-        addMessage(mode, { role: "assistant", content: data.reply });
+      addMessage(mode, { role: "assistant", content: data.reply });
       }
     } catch (error) {
       console.error("Chat API error:", error);
