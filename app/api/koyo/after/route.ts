@@ -9,6 +9,7 @@ import { integratePlaces } from "../_utils/places";
 import { detectStopIntent } from "../_utils/detectStopIntent";
 import { detectFoodKeyword } from "../_utils/stopIntentHelpers";
 import { searchSpotsFromDB } from "../_utils/searchSpotsFromDB";
+import { extractSelections } from "../_utils/extractSelections";
 import { resolveOriginFromFreeInput } from "../before/_utils/originResolver";
 import { parseOriginSelection } from "@/lib/koyo/precheckin/origins";
 import { normalizeUserSelection } from "@/lib/koyo/text/normalizeUserSelection";
@@ -720,17 +721,6 @@ const DEFAULT_DESTINATION: OriginInfo = {
   lng: null,
   name: null,
 };
-
-/**
- * Phase2-2: ユーザー入力から番号を抽出する関数
- * 対応例：1, 1,3, 1と3, 1 3, 1と 3
- * まずは半角数字のみ対応
- */
-function extractSelections(text: string): number[] {
-  const nums = text.match(/\d+/g)?.map(n => parseInt(n, 10)) ?? [];
-  // 重複排除 & 0以上（0も含める）
-  return Array.from(new Set(nums)).filter(n => n >= 0);
-}
 
 function getAfterDestinationAskPreface(stopIntent: StopIntent | null): string {
   if (!stopIntent) {

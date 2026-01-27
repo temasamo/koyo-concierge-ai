@@ -1301,7 +1301,7 @@ async function handleStayPlanner(
     if (matchedSpots && matchedSpots.length > 0) {
       response.spots = matchedSpots;
     }
-    
+
     // routeInfo を構築（Stayモード：originは古窯固定）
     const waypoints =
       matchedSpots && Array.isArray(matchedSpots)
