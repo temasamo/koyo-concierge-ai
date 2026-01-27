@@ -15,6 +15,7 @@ import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { getPrefBoundary } from "@/store/prefBoundaries";
 import { detectStopIntent, integratePlaces } from "../_utils/places";
 import { detectStopIntent as detectStopIntentFromUtils } from "../_utils/detectStopIntent";
+import { detectFoodKeyword } from "../_utils/stopIntentHelpers";
 import type { RouteInfo, StopIntent, RoutePlan } from "@/types/route";
 import { extractSelections } from "../_utils/extractSelections";
 
@@ -517,18 +518,79 @@ function resolveBeforeRouteOrigin(origin: OriginInfo): { lat: number; lng: numbe
   return KOYO_COORDINATES;
 }
 
-function buildBeforeCandidateList(optionalSpots: Spot[]): string {
-  return optionalSpots
-    .map((s, idx) => {
-      const category = s.category || "観光スポット";
-      const description = s.description ? ` - ${s.description}` : "";
-      return `(${idx + 1}) ${s.name}（${category}）${description}`;
-    })
-    .join("\n");
+function buildBeforeCandidateLine(spot: Spot, idx: number): string {
+  const category = spot.category || "観光スポット";
+  const description = spot.description ? ` - ${spot.description}` : "";
+  return `(${idx + 1}) ${spot.name}（${category}）${description}`;
 }
 
-function buildBeforeCandidateReply(optionalSpots: Spot[]): string {
-  const numberedList = buildBeforeCandidateList(optionalSpots);
+function buildBeforeCandidateList(optionalSpots: Spot[]): string {
+  return optionalSpots.map(buildBeforeCandidateLine).join("\n");
+}
+
+function buildBeforeCandidateListWithGrouping(
+  optionalSpots: Spot[],
+  stopIntent: StopIntent | null
+): string {
+  if (!stopIntent || stopIntent.type !== "lunch") {
+    return buildBeforeCandidateList(optionalSpots);
+  }
+
+  const kw = String(stopIntent.keyword ?? "").toLowerCase();
+  const fc = String(stopIntent.foodCategory ?? "").toLowerCase();
+  const hasSpecific = !!kw || !!fc;
+  if (!hasSpecific) {
+    return buildBeforeCandidateList(optionalSpots);
+  }
+
+  const entries = optionalSpots.map((spot, idx) => {
+    const name = String(spot.name ?? "").toLowerCase();
+    const cat = String(spot.category ?? "").toLowerCase();
+    const isSpecific =
+      (fc && (name.includes(fc) || cat.includes(fc))) ||
+      (kw && (name.includes(kw) || cat.includes(kw)));
+    const isFood =
+      name.includes("食") ||
+      cat.includes("食") ||
+      name.includes("ランチ") ||
+      cat.includes("ランチ");
+    return {
+      line: buildBeforeCandidateLine(spot, idx),
+      isSpecific,
+      isFood,
+    };
+  });
+
+  let primaryLines = entries.filter((e) => e.isSpecific).map((e) => e.line);
+  let secondaryLines = entries.filter((e) => !e.isSpecific).map((e) => e.line);
+
+  if (primaryLines.length === 0) {
+    // 特定ジャンルがヒットしない場合は「食べる系」を主目的扱いにフォールバック
+    primaryLines = entries.filter((e) => e.isFood).map((e) => e.line);
+    secondaryLines = entries.filter((e) => !e.isFood).map((e) => e.line);
+  }
+
+  const sections: string[] = [];
+  if (primaryLines.length > 0) {
+    sections.push("🍽 ご希望に近い候補（まずはこちら）");
+    sections.push(...primaryLines);
+  }
+  if (secondaryLines.length > 0) {
+    if (primaryLines.length > 0) {
+      sections.push("");
+    }
+    sections.push("＋ あわせて立ち寄れる候補");
+    sections.push(...secondaryLines);
+  }
+
+  return sections.length > 0 ? sections.join("\n") : buildBeforeCandidateList(optionalSpots);
+}
+
+function buildBeforeCandidateReply(
+  optionalSpots: Spot[],
+  stopIntent: StopIntent | null
+): string {
+  const numberedList = buildBeforeCandidateListWithGrouping(optionalSpots, stopIntent);
   return `寄り道候補をいくつか出しました。番号で選んでください。
 
 ${numberedList}
@@ -538,8 +600,11 @@ ${numberedList}
 ※「寄り道しない」場合は 0 と送ってください。`;
 }
 
-function buildBeforeNoSelectionReply(optionalSpots: Spot[]): string {
-  const numberedList = buildBeforeCandidateList(optionalSpots);
+function buildBeforeNoSelectionReply(
+  optionalSpots: Spot[],
+  stopIntent: StopIntent | null
+): string {
+  const numberedList = buildBeforeCandidateListWithGrouping(optionalSpots, stopIntent);
   return `選択された番号に対応する候補が見つかりませんでした。以下の番号で選んでください。
 
 ${numberedList}
@@ -593,27 +658,36 @@ function buildOptionalSpots(spots: Spot[], limit = 6): Spot[] {
 function hasIntentCategory(spots: any[], stopIntent: StopIntent | null): boolean {
   if (!stopIntent) return true;
 
-  const cats = (spots || []).map((s) => String(s.category || "").toLowerCase());
-
   if (stopIntent.type === "lunch") {
     const foodCategory = String(stopIntent.foodCategory || "").toLowerCase();
-    return cats.some(
-      (c) =>
-        c.includes("食") ||
-        c.includes("ランチ") ||
-        (foodCategory && c.includes(foodCategory))
-    );
+    const keyword = String(stopIntent.keyword || "").toLowerCase();
+    const hasSpecificKeyword = !!foodCategory || !!keyword;
+
+    return (spots || []).some((spot) => {
+      const cat = String(spot?.category || "").toLowerCase();
+      const name = String(spot?.name || "").toLowerCase();
+      if (hasSpecificKeyword) {
+        return (
+          (foodCategory && (cat.includes(foodCategory) || name.includes(foodCategory))) ||
+          (keyword && (cat.includes(keyword) || name.includes(keyword)))
+        );
+      }
+      return cat.includes("食") || cat.includes("ランチ");
+    });
   }
 
   if (stopIntent.type === "cafe") {
+    const cats = (spots || []).map((s) => String(s.category || "").toLowerCase());
     return cats.some((c) => c.includes("カフェ") || c.includes("喫茶") || c.includes("甘味"));
   }
 
   if (stopIntent.type === "onsen") {
+    const cats = (spots || []).map((s) => String(s.category || "").toLowerCase());
     return cats.some((c) => c.includes("温泉") || c.includes("風呂") || c.includes("スパ"));
   }
 
   if (stopIntent.type === "shop") {
+    const cats = (spots || []).map((s) => String(s.category || "").toLowerCase());
     return cats.some((c) => c.includes("買") || c.includes("土産") || c.includes("ショップ"));
   }
 
@@ -629,6 +703,36 @@ function buildPlacesOptions(spots: Spot[], stopIntent: StopIntent | null) {
   return needPlaceForIntent
     ? { forceCallPlaces: true, reason: "before:intent_missing" }
     : { minRequiredCount: 0, forceCallPlaces: false, reason: "before:intent_satisfied" };
+}
+
+function ensureSpotSources(spots: Spot[]): Spot[] {
+  return spots.map((spot) => {
+    if (spot.source) return spot;
+    if (spot.isFromPlaces || spot.placeId) return { ...spot, source: "places" };
+    return { ...spot, source: "db" };
+  });
+}
+
+function applyFoodKeywordToStopIntent(
+  stopIntent: StopIntent | null,
+  message: string
+): StopIntent | null {
+  if (!stopIntent || stopIntent.type !== "lunch") return stopIntent;
+  if (stopIntent.foodCategory) return stopIntent;
+
+  const { hasFoodKeyword, foodKeyword } = detectFoodKeyword(message);
+  if (!hasFoodKeyword || !foodKeyword) return stopIntent;
+
+  console.log("[koyo-before] stopIntent keyword enriched from message:", {
+    type: stopIntent.type,
+    foodCategory: stopIntent.foodCategory ?? null,
+    keyword: foodKeyword,
+  });
+
+  return {
+    ...stopIntent,
+    keyword: foodKeyword,
+  };
 }
 
 /**
@@ -896,7 +1000,7 @@ export async function POST(req: NextRequest) {
       if (isReverseCommand && selections.length === 0) {
         const reversedOptionalSpots = [...optionalSpots].reverse();
         return NextResponse.json({
-          reply: buildBeforeCandidateReply(reversedOptionalSpots),
+          reply: buildBeforeCandidateReply(reversedOptionalSpots, beforeContext.stopIntent || null),
           phase: "before:phase2_2_waiting_selection",
           optionalSpots: reversedOptionalSpots,
           origin: currentOrigin,
@@ -907,7 +1011,7 @@ export async function POST(req: NextRequest) {
 
       if (selections.length === 0) {
         return NextResponse.json({
-          reply: buildBeforeCandidateReply(optionalSpots),
+          reply: buildBeforeCandidateReply(optionalSpots, beforeContext.stopIntent || null),
           phase: "before:phase2_2_waiting_selection",
           optionalSpots: optionalSpots,
           origin: currentOrigin,
@@ -923,7 +1027,7 @@ export async function POST(req: NextRequest) {
 
       if (selectedSpots.length === 0) {
         return NextResponse.json({
-          reply: buildBeforeNoSelectionReply(optionalSpots),
+          reply: buildBeforeNoSelectionReply(optionalSpots, beforeContext.stopIntent || null),
           phase: "before:phase2_2_waiting_selection",
           optionalSpots: optionalSpots,
           origin: currentOrigin,
@@ -952,7 +1056,7 @@ export async function POST(req: NextRequest) {
         mode: "BEFORE",
         origin: routeInfo.origin,
         destination: routeInfo.destination,
-        spots: selectedSpots,
+        spots: ensureSpotSources(selectedSpots),
         constraints: {},
         bCallCount: 0,
       };
@@ -981,7 +1085,10 @@ export async function POST(req: NextRequest) {
     
     // チャット履歴から最初のStopIntentを含むメッセージを探す
     const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-    const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+    const stopIntent = applyFoodKeywordToStopIntent(
+      detectStopIntentFromUtils(stopIntentMessage),
+      stopIntentMessage
+    );
     
     // 分岐トレースログ：判定結果
     console.log("[koyo-before] 🔍 BRANCH TRACE - Conditions:", {
@@ -1034,7 +1141,10 @@ export async function POST(req: NextRequest) {
         let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
         // チャット履歴から最初のStopIntentを含むメッセージを探す
         const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-        const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+        const stopIntent = applyFoodKeywordToStopIntent(
+          detectStopIntentFromUtils(stopIntentMessage),
+          stopIntentMessage
+        );
         const result = await integratePlaces(
           finalSpots,
           stopIntent,
@@ -1045,7 +1155,7 @@ export async function POST(req: NextRequest) {
         finalSpots = result.spots;
         let optionalSpots = buildOptionalSpots(finalSpots);
         optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
-        const reply = buildBeforeCandidateReply(optionalSpots);
+        const reply = buildBeforeCandidateReply(optionalSpots, stopIntent);
 
         // ✅ Pre-Checkin 時だけ origin を返す
         // originInputMode が "current_location" の場合は削除（現在地確定完了を意味する）
@@ -1149,7 +1259,10 @@ G. その他（自由入力）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
           // チャット履歴から最初のStopIntentを含むメッセージを探す
           const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-          const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+          const stopIntent = applyFoodKeywordToStopIntent(
+            detectStopIntentFromUtils(stopIntentMessage),
+            stopIntentMessage
+          );
           const result = await integratePlaces(
             finalSpots,
             stopIntent,
@@ -1168,7 +1281,7 @@ G. その他（自由入力）
           } as OriginInfo;
           let optionalSpots = buildOptionalSpots(finalSpots);
           optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
-          const reply = buildBeforeCandidateReply(optionalSpots);
+          const reply = buildBeforeCandidateReply(optionalSpots, stopIntent);
 
           return NextResponse.json({
             reply,
@@ -1276,7 +1389,10 @@ G. その他（自由入力）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
           // チャット履歴から最初のStopIntentを含むメッセージを探す
           const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-          const stopIntent = detectStopIntentFromUtils(stopIntentMessage);
+          const stopIntent = applyFoodKeywordToStopIntent(
+            detectStopIntentFromUtils(stopIntentMessage),
+            stopIntentMessage
+          );
           const result = await integratePlaces(
             finalSpots,
             stopIntent,
@@ -1303,7 +1419,7 @@ G. その他（自由入力）
 
           let optionalSpots = buildOptionalSpots(finalSpots);
           optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
-          const reply = buildBeforeCandidateReply(optionalSpots);
+          const reply = buildBeforeCandidateReply(optionalSpots, stopIntent);
 
           // originが確定した時点でoriginInputModeを削除（リセット）
           // originInputModeを含めない = フロントエンド側で削除される
@@ -1566,7 +1682,9 @@ G. その他（自由入力）
     let optionalSpots = buildOptionalSpots(finalSpots || []);
     optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
     const candidateReply =
-      optionalSpots.length > 0 ? buildBeforeCandidateReply(optionalSpots) : buildBeforeEmptyCandidatesReply();
+      optionalSpots.length > 0
+        ? buildBeforeCandidateReply(optionalSpots, stopIntent)
+        : buildBeforeEmptyCandidatesReply();
     
     const response: any = {
       reply: candidateReply,
