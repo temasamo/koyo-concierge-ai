@@ -705,11 +705,26 @@ function buildPlacesOptions(spots: Spot[], stopIntent: StopIntent | null) {
     : { minRequiredCount: 0, forceCallPlaces: false, reason: "before:intent_satisfied" };
 }
 
-function ensureSpotSources(spots: Spot[]): Spot[] {
+type RoutePlanSpot = RoutePlan["spots"][number];
+
+function hasSpotSource(spot: Spot): spot is Spot & { source: RoutePlanSpot["source"] } {
+  return "source" in spot;
+}
+
+function hasPlaceId(spot: Spot): spot is Spot & { placeId: string } {
+  return "placeId" in spot;
+}
+
+function hasIsFromPlaces(spot: Spot): spot is Spot & { isFromPlaces: boolean } {
+  return "isFromPlaces" in spot;
+}
+
+function ensureSpotSources(spots: Spot[]): RoutePlan["spots"] {
   return spots.map((spot) => {
-    if (spot.source) return spot;
-    if (spot.isFromPlaces || spot.placeId) return { ...spot, source: "places" };
-    return { ...spot, source: "db" };
+    if (hasSpotSource(spot)) return spot;
+    const isFromPlaces = hasIsFromPlaces(spot) && spot.isFromPlaces;
+    const isPlaces = isFromPlaces || hasPlaceId(spot);
+    return { ...spot, source: isPlaces ? "places" : "db" };
   });
 }
 
