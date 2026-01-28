@@ -524,6 +524,35 @@ function buildBeforeCandidateLine(spot: Spot, idx: number): string {
   return `(${idx + 1}) ${spot.name}（${category}）${description}`;
 }
 
+function isSelectionLikeMessage(text: string): boolean {
+  const s = (text || "").trim();
+
+  // A/B/C/D/E (大小問わず)
+  if (/^[A-Ea-e]$/.test(s)) return true;
+
+  // 数字のみ: 1, 2, 3 ...
+  if (/^\d+$/.test(s)) return true;
+
+  // 1/2/3 や 1,2,3 や 1 2 3
+  if (/^\d+(\s*[,/]\s*\d+)+$/.test(s)) return true;
+
+  return false;
+}
+
+function findLastNaturalUserMessage(userMessages: any[], fallback: string): string {
+  // userMessages は ChatCompletionMessageParam[] 想定
+  // role === "user" を後ろから探して「自然文っぽい」ものを返す
+  for (let i = (userMessages?.length ?? 0) - 1; i >= 0; i--) {
+    const m = userMessages[i];
+    if (m?.role !== "user") continue;
+    const content = typeof m?.content === "string" ? m.content : "";
+    if (!content) continue;
+    if (isSelectionLikeMessage(content)) continue;
+    return content;
+  }
+  return fallback;
+}
+
 function buildBeforeCandidateList(optionalSpots: Spot[]): string {
   return optionalSpots.map(buildBeforeCandidateLine).join("\n");
 }
@@ -674,43 +703,105 @@ function buildOptionalSpots(spots: Spot[], limit = 6): Spot[] {
   }));
 }
 
+function isFoodLikeSpot(spot: any): boolean {
+  const name = String(spot?.name || "").toLowerCase();
+  const cat = String(spot?.category || "").toLowerCase();
+  const foodTerms = [
+    "食",
+    "食べる",
+    "飲食",
+    "ランチ",
+    "レストラン",
+    "カフェ",
+    "喫茶",
+  ];
+  return foodTerms.some((term) => (term ? name.includes(term) || cat.includes(term) : false));
+}
+
 async function fetchFallbackNonFoodSpots(limit = 2): Promise<Spot[]> {
   try {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from("spot_master")
       .select("*")
-      .not("category", "ilike", "%食%")
       .order("name")
-      .limit(limit);
+      .limit(Math.max(limit * 5, 10));
 
     if (error) {
       console.error("[koyo-before] Fallback spot fetch error:", error);
       return [];
     }
 
-    return (data || []).map((spot) => ({
-      id: spot.id,
-      name: spot.name,
-      lat: spot.lat,
-      lng: spot.lng,
-      category: spot.category,
-      city: spot.city,
-      season: spot.season,
-      drive_time: spot.drive_time,
-      walk_time: spot.walk_time,
-      stay_time: spot.stay_time,
-      url: spot.url,
-      tags: spot.tags,
-      drive_minutes: spot.drive_time
-        ? parseInt(spot.drive_time.match(/\d+/)?.[0] || "0")
-        : null,
-      source: "db" as const,
-    }));
+    const normalized = (data || [])
+      .map((spot) => ({
+        id: spot.id,
+        name: spot.name,
+        lat: spot.lat,
+        lng: spot.lng,
+        category: spot.category,
+        city: spot.city,
+        season: spot.season,
+        drive_time: spot.drive_time,
+        walk_time: spot.walk_time,
+        stay_time: spot.stay_time,
+        url: spot.url,
+        tags: spot.tags,
+        drive_minutes: spot.drive_time
+          ? parseInt(spot.drive_time.match(/\d+/)?.[0] || "0")
+          : null,
+        source: "db" as const,
+      }))
+      .filter((spot) => !isFoodLikeSpot(spot));
+
+    return normalized;
   } catch (error) {
     console.error("[koyo-before] Fallback spot fetch error:", error);
     return [];
   }
+}
+
+async function applyLunchNonFoodFill(
+  spots: Spot[],
+  stopIntent: StopIntent | null
+): Promise<Spot[]> {
+  if (!stopIntent || stopIntent.type !== "lunch") {
+    return spots;
+  }
+
+  console.log("[koyo-before] finalSpots before lunchFill", {
+    count: spots.length,
+    names: spots.map((s) => s.name).slice(0, 10),
+  });
+
+  const nonFood = spots.filter((spot) => !isFoodLikeSpot(spot));
+  const neededNonFood = Math.max(0, 2 - nonFood.length);
+
+  if (spots.length < 3 && neededNonFood > 0) {
+    const existingIds = new Set(spots.map((s) => s.id));
+    const fallbackPool = await fetchFallbackNonFoodSpots(neededNonFood);
+    const filteredFallback = fallbackPool.filter(
+      (s) => !existingIds.has(s.id) && !isFoodLikeSpot(s)
+    );
+    const added = filteredFallback.slice(0, neededNonFood);
+    if (added.length > 0) {
+      console.log("[koyo-before] fallbackNonFood added", {
+        count: added.length,
+        names: added.map((s) => s.name).slice(0, 10),
+      });
+      const merged = [...spots, ...added];
+      console.log("[koyo-before] finalSpots after lunchFill", {
+        count: merged.length,
+        names: merged.map((s) => s.name).slice(0, 10),
+      });
+      return merged;
+    }
+  }
+
+  console.log("[koyo-before] finalSpots after lunchFill", {
+    count: spots.length,
+    names: spots.map((s) => s.name).slice(0, 10),
+  });
+  return spots;
 }
 
 function hasIntentCategory(spots: any[], stopIntent: StopIntent | null): boolean {
@@ -1203,10 +1294,13 @@ export async function POST(req: NextRequest) {
           };
         }
 
+        const naturalUserMessage = findLastNaturalUserMessage(userMessages, userMessage);
+        console.log("[precheckin] naturalUserMessage:", naturalUserMessage);
+        console.log("[precheckin] rawUserMessage:", userMessage);
         const plan = await generatePrecheckinPlan({
           origin: originForPlan,
           prefecture,
-          userMessage,
+          userMessage: naturalUserMessage,
           stopIntent,
         });
         console.log("[koyo-before] plan.spots length", plan?.spots?.length, {
@@ -1226,6 +1320,7 @@ export async function POST(req: NextRequest) {
             finalSpots = [...fallbackSpots];
           }
         }
+        finalSpots = await applyLunchNonFoodFill(finalSpots, stopIntent);
         console.log("[koyo-before] finalSpots before places", finalSpots.length, {
           names: finalSpots.map((s: any) => s?.name).slice(0, 10),
         });
@@ -1336,9 +1431,12 @@ G. その他（自由入力）
       // A〜E の固定地点
       if ("name" in originSelection) {
         try {
+          const naturalUserMessage = findLastNaturalUserMessage(userMessages, userMessage);
+          console.log("[precheckin] naturalUserMessage:", naturalUserMessage);
+          console.log("[precheckin] rawUserMessage:", userMessage);
           const plan = await generatePrecheckinPlan({
             origin: originSelection,
-            userMessage,
+            userMessage: naturalUserMessage,
             stopIntent,
           });
           console.log("[koyo-before] plan.spots length", plan?.spots?.length, {
@@ -1358,6 +1456,7 @@ G. その他（自由入力）
               finalSpots = [...fallbackSpots];
             }
           }
+          finalSpots = await applyLunchNonFoodFill(finalSpots, stopIntent);
           console.log("[koyo-before] finalSpots before places", finalSpots.length, {
             names: finalSpots.map((s: any) => s?.name).slice(0, 10),
           });
@@ -1479,9 +1578,12 @@ G. その他（自由入力）
 
       if (resolution.type === "resolved") {
         try {
+          const naturalUserMessage = findLastNaturalUserMessage(userMessages, userMessage);
+          console.log("[precheckin] naturalUserMessage:", naturalUserMessage);
+          console.log("[precheckin] rawUserMessage:", userMessage);
           const plan = await generatePrecheckinPlan({
             origin: resolution.origin,
-            userMessage,
+            userMessage: naturalUserMessage,
             prefecture: resolution.prefecture,
             stopIntent,
           });
@@ -1502,6 +1604,7 @@ G. その他（自由入力）
               finalSpots = [...fallbackSpots];
             }
           }
+          finalSpots = await applyLunchNonFoodFill(finalSpots, stopIntent);
           console.log("[koyo-before] finalSpots before places", finalSpots.length, {
             names: finalSpots.map((s: any) => s?.name).slice(0, 10),
           });
