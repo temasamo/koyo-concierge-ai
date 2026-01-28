@@ -536,39 +536,58 @@ function buildBeforeCandidateListWithGrouping(
     return buildBeforeCandidateList(optionalSpots);
   }
 
-  const kw = String(stopIntent.keyword ?? "").toLowerCase();
-  const fc = String(stopIntent.foodCategory ?? "").toLowerCase();
-  const hasSpecific = !!kw || !!fc;
-  if (!hasSpecific) {
-    return buildBeforeCandidateList(optionalSpots);
-  }
+  const specificTerms = [stopIntent.foodCategory, stopIntent.keyword]
+    .filter(Boolean)
+    .map((term) => String(term).toLowerCase());
 
   const entries = optionalSpots.map((spot, idx) => {
     const name = String(spot.name ?? "").toLowerCase();
     const cat = String(spot.category ?? "").toLowerCase();
     const isSpecific =
-      (fc && (name.includes(fc) || cat.includes(fc))) ||
-      (kw && (name.includes(kw) || cat.includes(kw)));
+      specificTerms.length > 0 &&
+      specificTerms.some((term) => name.includes(term) || cat.includes(term));
     const isFood =
       name.includes("食") ||
       cat.includes("食") ||
       name.includes("ランチ") ||
-      cat.includes("ランチ");
+      cat.includes("ランチ") ||
+      name.includes("食べる") ||
+      cat.includes("食べる") ||
+      name.includes("飲食") ||
+      cat.includes("飲食") ||
+      name.includes("レストラン") ||
+      cat.includes("レストラン");
     return {
       line: buildBeforeCandidateLine(spot, idx),
+      name: spot.name,
       isSpecific,
       isFood,
     };
   });
 
-  let primaryLines = entries.filter((e) => e.isSpecific).map((e) => e.line);
-  let secondaryLines = entries.filter((e) => !e.isSpecific).map((e) => e.line);
+  let primaryEntries = entries.filter((e) => e.isSpecific);
+  let secondaryEntries = entries.filter((e) => !e.isSpecific);
 
-  if (primaryLines.length === 0) {
-    // 特定ジャンルがヒットしない場合は「食べる系」を主目的扱いにフォールバック
-    primaryLines = entries.filter((e) => e.isFood).map((e) => e.line);
-    secondaryLines = entries.filter((e) => !e.isFood).map((e) => e.line);
+  if (primaryEntries.length === 0) {
+    // 具体キーワードに一致しない場合は食べる系へフォールバック（現行思想維持）
+    const foodEntries = entries.filter((e) => e.isFood);
+    if (foodEntries.length > 0) {
+      primaryEntries = foodEntries;
+      secondaryEntries = entries.filter((e) => !e.isFood);
+    } else {
+      return buildBeforeCandidateList(optionalSpots);
+    }
   }
+
+  const primaryLines = primaryEntries.map((e) => e.line);
+  const secondaryLines = secondaryEntries.map((e) => e.line);
+
+  console.log("[koyo-before] primary/secondary stats", {
+    primary: primaryLines.length,
+    secondary: secondaryLines.length,
+    terms: specificTerms,
+    primaryNames: primaryEntries.map((e) => e.name),
+  });
 
   const sections: string[] = [];
   if (primaryLines.length > 0) {
@@ -653,6 +672,45 @@ function buildOptionalSpots(spots: Spot[], limit = 6): Spot[] {
     ...spot,
     spotRole: "optional" as const,
   }));
+}
+
+async function fetchFallbackNonFoodSpots(limit = 2): Promise<Spot[]> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("spot_master")
+      .select("*")
+      .not("category", "ilike", "%食%")
+      .order("name")
+      .limit(limit);
+
+    if (error) {
+      console.error("[koyo-before] Fallback spot fetch error:", error);
+      return [];
+    }
+
+    return (data || []).map((spot) => ({
+      id: spot.id,
+      name: spot.name,
+      lat: spot.lat,
+      lng: spot.lng,
+      category: spot.category,
+      city: spot.city,
+      season: spot.season,
+      drive_time: spot.drive_time,
+      walk_time: spot.walk_time,
+      stay_time: spot.stay_time,
+      url: spot.url,
+      tags: spot.tags,
+      drive_minutes: spot.drive_time
+        ? parseInt(spot.drive_time.match(/\d+/)?.[0] || "0")
+        : null,
+      source: "db" as const,
+    }));
+  } catch (error) {
+    console.error("[koyo-before] Fallback spot fetch error:", error);
+    return [];
+  }
 }
 
 function hasIntentCategory(spots: any[], stopIntent: StopIntent | null): boolean {
@@ -1149,17 +1207,28 @@ export async function POST(req: NextRequest) {
           origin: originForPlan,
           prefecture,
           userMessage,
+          stopIntent,
+        });
+        console.log("[koyo-before] plan.spots length", plan?.spots?.length, {
+          names: (plan?.spots || []).map((s: any) => s?.name).slice(0, 10),
         });
 
         // Places API統合（途中立ち寄り意図検出）
         // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
         let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
-        // チャット履歴から最初のStopIntentを含むメッセージを探す
-        const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-        const stopIntent = applyFoodKeywordToStopIntent(
-          detectStopIntentFromUtils(stopIntentMessage),
-          stopIntentMessage
-        );
+        if (finalSpots.length === 0) {
+          const fallbackSpots = await fetchFallbackNonFoodSpots(2);
+          if (fallbackSpots.length > 0) {
+            console.log("[koyo-before] Fallback non-food spots added", {
+              count: fallbackSpots.length,
+              names: fallbackSpots.map((s) => s.name).slice(0, 10),
+            });
+            finalSpots = [...fallbackSpots];
+          }
+        }
+        console.log("[koyo-before] finalSpots before places", finalSpots.length, {
+          names: finalSpots.map((s: any) => s?.name).slice(0, 10),
+        });
         const result = await integratePlaces(
           finalSpots,
           stopIntent,
@@ -1169,6 +1238,9 @@ export async function POST(req: NextRequest) {
         );
         finalSpots = result.spots;
         let optionalSpots = buildOptionalSpots(finalSpots);
+        console.log("[koyo-before] optionalSpots after places", optionalSpots.length, {
+          names: optionalSpots.map((s: any) => s?.name).slice(0, 10),
+        });
         optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
         const reply = buildBeforeCandidateReply(optionalSpots, stopIntent);
 
@@ -1267,17 +1339,28 @@ G. その他（自由入力）
           const plan = await generatePrecheckinPlan({
             origin: originSelection,
             userMessage,
+            stopIntent,
+          });
+          console.log("[koyo-before] plan.spots length", plan?.spots?.length, {
+            names: (plan?.spots || []).map((s: any) => s?.name).slice(0, 10),
           });
 
           // Places API統合（途中立ち寄り意図検出）
           // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
-          // チャット履歴から最初のStopIntentを含むメッセージを探す
-          const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-          const stopIntent = applyFoodKeywordToStopIntent(
-            detectStopIntentFromUtils(stopIntentMessage),
-            stopIntentMessage
-          );
+          if (finalSpots.length === 0) {
+            const fallbackSpots = await fetchFallbackNonFoodSpots(2);
+            if (fallbackSpots.length > 0) {
+              console.log("[koyo-before] Fallback non-food spots added", {
+                count: fallbackSpots.length,
+                names: fallbackSpots.map((s) => s.name).slice(0, 10),
+              });
+              finalSpots = [...fallbackSpots];
+            }
+          }
+          console.log("[koyo-before] finalSpots before places", finalSpots.length, {
+            names: finalSpots.map((s: any) => s?.name).slice(0, 10),
+          });
           const result = await integratePlaces(
             finalSpots,
             stopIntent,
@@ -1295,6 +1378,9 @@ G. その他（自由入力）
             lng: originSelection.lng,
           } as OriginInfo;
           let optionalSpots = buildOptionalSpots(finalSpots);
+          console.log("[koyo-before] optionalSpots after places", optionalSpots.length, {
+            names: optionalSpots.map((s: any) => s?.name).slice(0, 10),
+          });
           optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
           const reply = buildBeforeCandidateReply(optionalSpots, stopIntent);
 
@@ -1397,17 +1483,28 @@ G. その他（自由入力）
             origin: resolution.origin,
             userMessage,
             prefecture: resolution.prefecture,
+            stopIntent,
+          });
+          console.log("[koyo-before] plan.spots length", plan?.spots?.length, {
+            names: (plan?.spots || []).map((s: any) => s?.name).slice(0, 10),
           });
 
           // Places API統合（途中立ち寄り意図検出）
           // matchedSpotsが空でもintegratePlacesを呼ぶ（DBスポットがなくてもPlacesで補完）
           let finalSpots = plan.spots && Array.isArray(plan.spots) ? [...plan.spots] : [];
-          // チャット履歴から最初のStopIntentを含むメッセージを探す
-          const stopIntentMessage = findStopIntentMessage(userMessages) || userMessage;
-          const stopIntent = applyFoodKeywordToStopIntent(
-            detectStopIntentFromUtils(stopIntentMessage),
-            stopIntentMessage
-          );
+          if (finalSpots.length === 0) {
+            const fallbackSpots = await fetchFallbackNonFoodSpots(2);
+            if (fallbackSpots.length > 0) {
+              console.log("[koyo-before] Fallback non-food spots added", {
+                count: fallbackSpots.length,
+                names: fallbackSpots.map((s) => s.name).slice(0, 10),
+              });
+              finalSpots = [...fallbackSpots];
+            }
+          }
+          console.log("[koyo-before] finalSpots before places", finalSpots.length, {
+            names: finalSpots.map((s: any) => s?.name).slice(0, 10),
+          });
           const result = await integratePlaces(
             finalSpots,
             stopIntent,
@@ -1433,6 +1530,9 @@ G. その他（自由入力）
           });
 
           let optionalSpots = buildOptionalSpots(finalSpots);
+          console.log("[koyo-before] optionalSpots after places", optionalSpots.length, {
+            names: optionalSpots.map((s: any) => s?.name).slice(0, 10),
+          });
           optionalSpots = sortOptionalSpotsByIntent(optionalSpots, stopIntent);
           const reply = buildBeforeCandidateReply(optionalSpots, stopIntent);
 

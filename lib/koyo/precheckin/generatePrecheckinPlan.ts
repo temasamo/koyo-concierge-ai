@@ -4,10 +4,12 @@
  */
 
 import OpenAI from "openai";
+import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import type { Origin } from "./origins";
 import type { PrefectureKey } from "@/app/api/koyo/before/_constants/prefEntryPoints";
 import { matchSpot } from "@/app/api/koyo/_utils/matchSpot";
+import type { StopIntent } from "@/types/route";
 
 // OpenAIクライアントを取得する関数
 function getOpenAIClient() {
@@ -154,6 +156,62 @@ ${spotListText}
 `;
 }
 
+const PrecheckinPlanSchema = z.object({
+  reply: z.string().optional().default(""),
+  plan: z
+    .array(
+      z
+        .object({
+          name: z.string().optional(),
+          title: z.string().optional(),
+          description: z.string().optional(),
+          spots: z
+            .array(
+              z.object({
+                name: z.string().optional(),
+                id: z.string().optional(),
+              })
+            )
+            .optional(),
+        })
+        .passthrough()
+    )
+    .default([]),
+}).passthrough();
+
+function looksLikeInstructionEcho(text: string) {
+  const t = (text || "").toLowerCase();
+  return t.includes("若女将") && t.includes("必ず") && t.includes("スポット名");
+}
+
+async function fallbackPickSpots(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  stopIntent?: StopIntent | null
+): Promise<any[]> {
+  if (stopIntent?.type === "lunch") {
+    const { data: foodData } = await supabase
+      .from("spot_master")
+      .select("*")
+      .ilike("category", "%食べる%")
+      .limit(2);
+    const foodSpots = foodData ?? [];
+    if (foodSpots.length >= 2) {
+      return foodSpots;
+    }
+    const { data: fillData } = await supabase
+      .from("spot_master")
+      .select("*")
+      .limit(3 - foodSpots.length);
+    return [...foodSpots, ...(fillData ?? [])];
+  }
+
+  const { data } = await supabase
+    .from("spot_master")
+    .select("*")
+    .limit(3);
+  return data ?? [];
+}
+
 /**
  * plan[0].spotsからスポットを抽出し、Supabaseとマッチングする関数
  */
@@ -183,6 +241,7 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
 
     // AIが返したスポットをSupabase形式に変換
     const matchedSpots: any[] = [];
+    const unmatchedNames: string[] = [];
     const usedSpotIds = new Set<string>();
 
     for (const aiSpot of aiSpots) {
@@ -222,9 +281,16 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
         usedSpotIds.add(matched.id);
         console.log(`[precheckin] Matched spot: "${aiSpot.name || aiSpot.id}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
       } else {
+        const unmatchedLabel = String(aiSpot.name || aiSpot.id || "").trim();
+        if (unmatchedLabel) {
+          unmatchedNames.push(unmatchedLabel);
+        }
         console.warn(`[precheckin] No match found for: "${aiSpot.name || aiSpot.id}"`);
       }
     }
+
+    console.log("[precheckin] matched count:", matchedSpots.length);
+    console.log("[precheckin] unmatched names:", unmatchedNames.slice(0, 30));
 
     return matchedSpots.length > 0 ? matchedSpots : undefined;
   } catch (error) {
@@ -240,10 +306,12 @@ export async function generatePrecheckinPlan({
   origin,
   userMessage,
   prefecture,
+  stopIntent,
 }: {
   origin: Origin;
   userMessage: string;
   prefecture?: PrefectureKey;
+  stopIntent?: StopIntent | null;
 }): Promise<{
   reply: string;
   plan: any[];
@@ -254,30 +322,101 @@ export async function generatePrecheckinPlan({
   try {
     const openai = getOpenAIClient();
     const systemPrompt = await buildPrecheckinSystemPrompt(origin, userMessage);
+    const responseFormat = { type: "json_object" } as const;
+    const supabase = getSupabaseClient();
+    const { count: spotCount } = await supabase
+      .from("spot_master")
+      .select("*", { count: "exact", head: true });
 
-    const completion = await openai.chat.completions.create({
-      model: process.env.KOYO_BEFORE_MODEL || "gpt-4o-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.7,
-      response_format: { type: "json_object" },
-    });
+    console.log("[precheckin] systemPrompt head:", systemPrompt.slice(0, 1200));
+    console.log("[precheckin] userMessage:", userMessage);
+    console.log("[precheckin] spot_master count:", spotCount ?? -1);
+    console.log("[precheckin] response_format:", responseFormat);
 
-    const reply = completion.choices[0]?.message?.content ?? "";
+    const callLLM = async () => {
+      const completion = await openai.chat.completions.create({
+        model: process.env.KOYO_BEFORE_MODEL || "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.7,
+        response_format: responseFormat,
+      });
+      return completion.choices[0]?.message?.content ?? "";
+    };
 
-    // JSONをパース
+    let rawText = await callLLM();
+    console.log("[precheckin] LLM raw (first 800 chars):", String(rawText).slice(0, 800));
+
     let planData: any;
-    try {
-      planData = JSON.parse(reply);
-    } catch (error) {
-      console.error("[precheckin] Failed to parse AI response:", error);
-      throw new Error("AIの応答の解析に失敗しました");
+    let parsed: z.infer<typeof PrecheckinPlanSchema> | null = null;
+    let attempts = 0;
+
+    const parsePlan = (text: string) => {
+      try {
+        const json = JSON.parse(text);
+        const parsedResult = PrecheckinPlanSchema.safeParse(json);
+        if (!parsedResult.success) {
+          return { ok: false, error: parsedResult.error, planData: json };
+        }
+        return { ok: true, planData: parsedResult.data };
+      } catch (error) {
+        return { ok: false, error, planData: null };
+      }
+    };
+
+    while (attempts < 2) {
+      const parseResult = parsePlan(rawText);
+      if (!parseResult.ok) {
+        planData = parseResult.planData;
+      } else {
+        planData = parseResult.planData;
+        parsed = planData;
+      }
+
+      console.log("[precheckin] planData keys:", planData ? Object.keys(planData) : null);
+      console.log(
+        "[precheckin] planData.plan length:",
+        Array.isArray(planData?.plan) ? planData.plan.length : null
+      );
+      console.log(
+        "[precheckin] planData.plan names:",
+        Array.isArray(planData?.plan) ? planData.plan.map((p: any) => p?.name).slice(0, 20) : null
+      );
+
+      const planLen = Array.isArray(planData?.plan) ? planData.plan.length : 0;
+      const echo = looksLikeInstructionEcho(planData?.reply || "");
+      if (parsed && planLen > 0 && !echo) {
+        break;
+      }
+
+      if (attempts === 0) {
+        console.log("[precheckin] retry because empty plan or echo", {
+          planLen,
+          echo,
+        });
+        rawText = await callLLM();
+        console.log("[precheckin] LLM raw (first 800 chars):", String(rawText).slice(0, 800));
+      }
+
+      attempts += 1;
+      if (attempts >= 2) {
+        break;
+      }
+    }
+
+    if (!parsed) {
+      planData = { reply: "", plan: [] };
     }
 
     // plan配列を抽出
     const planArray = planData.plan || [];
+    console.log("[precheckin] planArray length:", planArray.length);
+    console.log(
+      "[precheckin] planArray names:",
+      planArray.map((p: any) => p?.name).slice(0, 20)
+    );
 
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
@@ -308,7 +447,14 @@ export async function generatePrecheckinPlan({
     }
 
     // replyからJSON部分を除去してクリーンなメッセージにする（既にJSON形式なのでそのまま使用）
-    const cleanReply = planData.reply || "";
+    let cleanReply = planData.reply || "";
+    const foodHint =
+      stopIntent?.type === "lunch"
+        ? stopIntent.foodCategory || stopIntent.keyword
+        : null;
+    if (foodHint) {
+      cleanReply = `ご希望の「${foodHint}」も踏まえて、寄り道候補をご提案します。\n\n${cleanReply}`;
+    }
 
     // レスポンスを構築
     const response: any = {
@@ -325,6 +471,15 @@ export async function generatePrecheckinPlan({
     // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
     if (matchedSpots && matchedSpots.length > 0) {
       response.spots = matchedSpots;
+    } else {
+      const fallbackSpots = await fallbackPickSpots(supabase, stopIntent);
+      console.log("[precheckin] fallback DB spots used", {
+        count: fallbackSpots.length,
+        names: fallbackSpots.map((s: any) => s?.name),
+      });
+      if (fallbackSpots.length > 0) {
+        response.spots = fallbackSpots;
+      }
     }
 
     return response;
