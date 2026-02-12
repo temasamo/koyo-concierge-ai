@@ -1308,28 +1308,33 @@ async function handleStayPlanner(
         ? matchedSpots
             .filter((s: any) => {
               // 座標の型と値の検証を強化
-              const isValid = 
-                s.lat != null && 
+              const isValid =
+                s.lat != null &&
                 s.lng != null &&
                 typeof s.lat === "number" &&
                 typeof s.lng === "number" &&
                 !isNaN(s.lat) &&
                 !isNaN(s.lng) &&
-                s.lat >= -90 && s.lat <= 90 &&
-                s.lng >= -180 && s.lng <= 180;
-              
+                s.lat >= -90 &&
+                s.lat <= 90 &&
+                s.lng >= -180 &&
+                s.lng <= 180;
+
               if (!isValid) {
-                console.warn(`[koyo-stay] Invalid coordinates for spot "${s.name}" (${s.id}): lat=${s.lat}, lng=${s.lng}`);
+                console.warn(
+                  `[koyo-stay] Invalid coordinates for spot "${s.name}" (${s.id}): lat=${s.lat}, lng=${s.lng}`
+                );
               }
-              
+
               return isValid;
             })
             .map((s: any) => {
               // 座標を数値型に明示的に変換
               const lat = Number(s.lat);
               const lng = Number(s.lng);
-              
-              return { lat, lng };
+
+              // RouteList で spot 解決できるように spotId/name を付与
+              return { lat, lng, spotId: s.id, name: s.name };
             })
         : [];
     

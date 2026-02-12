@@ -36,12 +36,40 @@ export type OriginInfo = {
   name?: string | null; // オプショナル（fixed タイプの場合のみ使用）
 };
 
+type MapFilters = {
+  transport?: "driving" | "walking";
+  radiusKm?: number;
+  category?: string;
+  keyword?: string;
+};
+
+type RouteDraft = {
+  routeInfo: RouteInfo | null;
+  routePlan: RoutePlan | null;
+  spots: Spot[];
+  optionalSpots: Spot[];
+};
+
 type SpotStore = {
   // RoutePlan（双方向機能強化用）
   routePlan: RoutePlan | null;
   setRoutePlan: (routePlan: RoutePlan | null) => void;
   clearRoutePlan: () => void;
   updateRoutePlan: (updates: Partial<RoutePlan>) => void;
+  
+  // 共有Trip State（Step0）
+  tripId: string;
+  selectedSpotId: string | null;
+  routeDraft: RouteDraft | null;
+  mapFilters: MapFilters;
+  lastEvent: { type: string; payload: any; ts: number } | null;
+  startNewTrip: () => void;
+  setSelectedSpotId: (id: string | null) => void;
+  setMapFilters: (filters: Partial<MapFilters>) => void;
+  clearMapFilters: () => void;
+  setRouteDraft: (draft: RouteDraft | null) => void;
+  applyDraftToConfirmed: () => void;
+  setLastEvent: (type: string, payload: any) => void;
   
   // 既存フィールド（後方互換性のため保持、RoutePlanから同期）
   spots: Spot[];
@@ -117,6 +145,41 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
       get().setRoutePlan(updated);
     }
   },
+  
+  // 共有Trip State（Step0）
+  tripId: `trip_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+  selectedSpotId: null,
+  routeDraft: null,
+  mapFilters: {},
+  lastEvent: null,
+  startNewTrip: () => {
+    set({
+      tripId: `trip_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      selectedSpotId: null,
+      routeDraft: null,
+      lastEvent: null,
+    });
+  },
+  setSelectedSpotId: (id) => set({ selectedSpotId: id }),
+  setMapFilters: (filters) =>
+    set((state) => ({
+      mapFilters: { ...state.mapFilters, ...filters },
+    })),
+  clearMapFilters: () => set({ mapFilters: {} }),
+  setRouteDraft: (draft) => set({ routeDraft: draft }),
+  applyDraftToConfirmed: () => {
+    const draft = get().routeDraft;
+    if (!draft) return;
+    get().applyRouteUpdate({
+      routeInfo: draft.routeInfo,
+      routePlan: draft.routePlan,
+      spots: draft.spots,
+      optionalSpots: draft.optionalSpots,
+    });
+    set({ routeDraft: null });
+  },
+  setLastEvent: (type, payload) =>
+    set({ lastEvent: { type, payload, ts: Date.now() } }),
   
   // 既存フィールド（後方互換性のため保持）
   spots: [],
