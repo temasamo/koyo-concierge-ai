@@ -1170,7 +1170,8 @@ async function handleFacilityOperation(
  * プラン提案AIのハンドラー関数（既存ロジック）
  */
 async function handleStayPlanner(
-  userMessages: ChatCompletionMessageParam[]
+  userMessages: ChatCompletionMessageParam[],
+  selectedSpotId?: string | null
 ): Promise<NextResponse> {
   try {
     // 最後のユーザーメッセージを取得
@@ -1235,6 +1236,7 @@ async function handleStayPlanner(
     let finalPlan: any[] | undefined;
     let placesApiFailed = false;
     let stopIntent: ReturnType<typeof detectStopIntent> = null;
+    let selectedSpot: any | null = null;
 
     if (planArray && planArray.length > 0) {
       matchedSpots = await extractAndMatchSpots(planArray);
@@ -1276,6 +1278,29 @@ async function handleStayPlanner(
       cleanReply = sanitizeReplyForFailedPlaces(cleanReply, stopIntent);
     }
     
+    if (selectedSpotId) {
+      console.log("[stay] selectedSpotId", selectedSpotId);
+      const hit = matchedSpots?.find((spot) => spot.id === selectedSpotId) ?? null;
+      console.log("[stay] selectedSpot hit", {
+        found: !!hit,
+        name: hit?.name ?? null,
+      });
+      selectedSpot = hit;
+    }
+
+    if (selectedSpot) {
+      const category = String(selectedSpot.category ?? "").trim();
+      const highlight = category
+        ? `ここは${category}として人気の場所です。`
+        : "ここは落ち着いて過ごしやすい場所です。";
+      const intro = `まずは『${selectedSpot.name}』を軸に動くのがおすすめです。${highlight}このあと近くで散策や休憩も組みやすいです。`;
+      const paragraphs = cleanReply.split(/\n\s*\n/);
+      cleanReply =
+        paragraphs.length > 1
+          ? [intro, ...paragraphs.slice(1)].join("\n\n")
+          : `${intro}\n\n${cleanReply}`.trim();
+    }
+
     // Places API結果はreplyに追記しない（フェーズ1: AIは店名を知らない）
     
     // デバッグログ
@@ -1378,9 +1403,19 @@ async function handleStayPlanner(
  * - query: 単発問い合わせ
  * - gender: 性別（施設案内用、オプショナル）
  */
+type StayUserState = {
+  tripId?: string;
+  selectedSpotId?: string | null;
+  selectedSpotSource?: "map" | "chat" | null;
+};
+
 type StayRequestBody =
-  | { messages: ChatCompletionMessageParam[]; gender?: "male" | "female" }
-  | { query: string; gender?: "male" | "female" };
+  | {
+      messages: ChatCompletionMessageParam[];
+      gender?: "male" | "female";
+      userState?: StayUserState;
+    }
+  | { query: string; gender?: "male" | "female"; userState?: StayUserState };
 
 export async function POST(req: NextRequest) {
   try {
@@ -1389,6 +1424,7 @@ export async function POST(req: NextRequest) {
     let userMessages: ChatCompletionMessageParam[];
     let userMessage: string;
     const gender = body.gender;
+    const selectedSpotId = body.userState?.selectedSpotId ?? null;
 
     if ("messages" in body && Array.isArray(body.messages)) {
       // フロントの履歴を採用
@@ -1418,6 +1454,7 @@ export async function POST(req: NextRequest) {
       userMessageRaw: userMessage,
       userMessageNormalized: normalizedMessage,
       gender,
+      selectedSpotId,
     });
 
     // Phase1.75: モード相違検出
@@ -1445,7 +1482,7 @@ export async function POST(req: NextRequest) {
     if (stopIntent) {
       // 外出プランとして処理（温泉・ランチ・カフェなど）
       console.log("[koyo-stay] ✅ BRANCH: outdoor_plan (stopIntent detected)");
-      return handleStayPlanner(userMessages);
+      return handleStayPlanner(userMessages, selectedSpotId);
     } else if (isFacility) {
       // 館内施設案内（利用情報の問い合わせ）
       console.log("[koyo-stay] ✅ BRANCH: facility_query (isFacilityQuery=true)");
@@ -1453,7 +1490,7 @@ export async function POST(req: NextRequest) {
     } else {
       // デフォルトは外出プラン
       console.log("[koyo-stay] ✅ BRANCH: default_plan (fallback)");
-      return handleStayPlanner(userMessages);
+      return handleStayPlanner(userMessages, selectedSpotId);
     }
   } catch (error: any) {
     console.error("[koyo-stay] error:", error);

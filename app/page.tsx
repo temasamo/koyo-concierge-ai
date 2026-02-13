@@ -135,6 +135,9 @@ export default function Page() {
           origin: params.userState.origin,
           destination: mode === "after" ? params.userState.destination : undefined,
           originInputMode: params.userState.originInputMode,
+          tripId: store.tripId,
+          selectedSpotId: store.selectedSpotId,
+          selectedSpotSource: store.selectedSpotSource,
           // Afterモードの場合、ルート状態をuserStateに追加
           // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
           ...(mode === "after"
@@ -215,6 +218,23 @@ export default function Page() {
       
       console.log("[page.tsx] sendMessageWithUserState - requestBody:", requestBody);
       
+      if (mode === "stay") {
+        console.log("[Chat] sending userState", {
+          tripId: store.tripId,
+          selectedSpotId: store.selectedSpotId,
+          selectedSpotSource: store.selectedSpotSource,
+          mode,
+        });
+        console.log("[page.tsx] onSend stay requestBody:", requestBody);
+      }
+      if (mode === "stay") {
+        console.log("[Chat] sending userState", {
+          tripId: store.tripId,
+          selectedSpotId: store.selectedSpotId,
+          selectedSpotSource: store.selectedSpotSource,
+          mode,
+        });
+      }
       const res = await fetch(apiEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -427,6 +447,9 @@ export default function Page() {
               origin: currentOrigin,
               destination: mode === "after" ? currentDestination : undefined,
               originInputMode: originInputMode,
+              tripId: store.tripId,
+              selectedSpotId: store.selectedSpotId,
+              selectedSpotSource: store.selectedSpotSource,
               // Afterモードの場合、ルート状態をuserStateに追加
               // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
               ...(mode === "after"

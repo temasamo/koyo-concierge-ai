@@ -60,6 +60,7 @@ type SpotStore = {
   // 共有Trip State（Step0）
   tripId: string;
   selectedSpotId: string | null;
+  selectedSpotSource: "map" | "chat" | null;
   routeDraft: RouteDraft | null;
   mapFilters: MapFilters;
   lastEvent: { type: string; payload: any; ts: number } | null;
@@ -70,6 +71,10 @@ type SpotStore = {
   setRouteDraft: (draft: RouteDraft | null) => void;
   applyDraftToConfirmed: () => void;
   setLastEvent: (type: string, payload: any) => void;
+  // Step1: Map/Chat選択の共有
+  newTrip: () => void;
+  setSelectedSpot: (spotId: string | null, source?: "map" | "chat") => void;
+  clearSelectedSpot: () => void;
   
   // 既存フィールド（後方互換性のため保持、RoutePlanから同期）
   spots: Spot[];
@@ -147,20 +152,23 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   },
   
   // 共有Trip State（Step0）
-  tripId: `trip_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+  tripId: crypto.randomUUID(),
   selectedSpotId: null,
+  selectedSpotSource: null,
   routeDraft: null,
   mapFilters: {},
   lastEvent: null,
   startNewTrip: () => {
     set({
-      tripId: `trip_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      tripId: crypto.randomUUID(),
       selectedSpotId: null,
+      selectedSpotSource: null,
       routeDraft: null,
       lastEvent: null,
     });
   },
-  setSelectedSpotId: (id) => set({ selectedSpotId: id }),
+  setSelectedSpotId: (id) =>
+    set({ selectedSpotId: id, selectedSpotSource: null }),
   setMapFilters: (filters) =>
     set((state) => ({
       mapFilters: { ...state.mapFilters, ...filters },
@@ -180,6 +188,20 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   },
   setLastEvent: (type, payload) =>
     set({ lastEvent: { type, payload, ts: Date.now() } }),
+  newTrip: () => {
+    set({
+      tripId: crypto.randomUUID(),
+      selectedSpotId: null,
+      selectedSpotSource: null,
+    });
+  },
+  setSelectedSpot: (spotId, source) =>
+    set({
+      selectedSpotId: spotId,
+      selectedSpotSource: spotId ? source ?? null : null,
+    }),
+  clearSelectedSpot: () =>
+    set({ selectedSpotId: null, selectedSpotSource: null }),
   
   // 既存フィールド（後方互換性のため保持）
   spots: [],

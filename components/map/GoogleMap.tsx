@@ -1031,14 +1031,21 @@ export default function GoogleMap({
     
     // ラベルを割り当て
     const labeledRoutePoints = assignLabel(generatedRoutePoints, mode);
+    const waypointPointCount = labeledRoutePoints.filter((p) => p.pointType === "waypoint").length;
     console.log("[GoogleMap] Generated routePoints:", labeledRoutePoints.length, "points");
     console.log("[GoogleMap] Mode:", mode);
-    console.log("[GoogleMap] routePoints details:", JSON.stringify(labeledRoutePoints.map(p => ({
+    console.log("[GoogleMap] routePoints (full):", JSON.stringify(labeledRoutePoints, null, 2));
+    console.log("[GoogleMap] routePoints field-check:", labeledRoutePoints.map((p) => ({
       pointType: p.pointType,
-      label: p.label,
-      name: p.name,
-      location: p.location
-    })), null, 2));
+      hasName: !!p.name,
+      hasSpotId: !!(p as any).spotId,
+    })));
+    console.log("[GoogleMap] stay waypoint check:", {
+      isStay: mode === "stay",
+      expectedWaypoints: routeWaypoints.length,
+      actualWaypoints: waypointPointCount,
+      includesWaypoints: waypointPointCount > 0,
+    });
     setRoutePoints(labeledRoutePoints);
 
     directionsServiceRef.current.route(request, (result: any, status: any) => {
@@ -1305,6 +1312,14 @@ export default function GoogleMap({
 
       // クリックイベントを追加
       if (infoWindow) {
+        marker.addListener("dblclick", (e: any) => {
+          if (e?.domEvent?.preventDefault) e.domEvent.preventDefault();
+          if (e?.domEvent?.stopPropagation) e.domEvent.stopPropagation();
+          if (point.spotId && onSpotDoubleClick) {
+            console.log("[GoogleMap] Double click detected for spot:", point.spotId);
+            onSpotDoubleClick(point.spotId);
+          }
+        });
         marker.addListener("click", () => {
           // 他の情報ウィンドウを閉じる
           infoWindowsRef.current.forEach((iw) => iw.close());
@@ -1466,6 +1481,14 @@ export default function GoogleMap({
       });
 
       // クリックイベントを追加
+      marker.addListener("dblclick", (e: any) => {
+        if (e?.domEvent?.preventDefault) e.domEvent.preventDefault();
+        if (e?.domEvent?.stopPropagation) e.domEvent.stopPropagation();
+        if (spot.id && onSpotDoubleClick) {
+          console.log("[GoogleMap] Double click detected for spot:", spot.id);
+          onSpotDoubleClick(spot.id);
+        }
+      });
       marker.addListener("click", () => {
         // 他のInfoWindowを閉じる（routePoints由来のものも含む）
         infoWindowsRef.current.forEach((iw) => iw.close());
@@ -1474,6 +1497,23 @@ export default function GoogleMap({
           map: mapInstanceRef.current,
           anchor: marker,
         });
+
+        if (spot.id && onSpotDoubleClick) {
+          const now = Date.now();
+          const timeSinceLastClick = now - lastClickTimeRef.current;
+          if (
+            lastClickedSpotIdRef.current === spot.id &&
+            timeSinceLastClick < DOUBLE_CLICK_THRESHOLD
+          ) {
+            console.log("[GoogleMap] Double click detected for spot:", spot.id);
+            onSpotDoubleClick(spot.id);
+            lastClickedSpotIdRef.current = null;
+            lastClickTimeRef.current = 0;
+          } else {
+            lastClickedSpotIdRef.current = spot.id;
+            lastClickTimeRef.current = now;
+          }
+        }
       });
 
       optionalMarkersRef.current.push(marker);
