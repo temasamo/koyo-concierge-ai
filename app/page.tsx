@@ -941,7 +941,7 @@ export default function Page() {
       const targetId = selectedSpotId;
       const send = async () => {
         setLastSelectionSentId(targetId);
-        setSelectedSpot(targetId, null);
+        setSelectedSpot(targetId);
         await onSend("このスポットでお願いします");
         autoSendInFlightRef.current = false;
       };
