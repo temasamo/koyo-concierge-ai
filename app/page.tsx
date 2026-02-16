@@ -118,6 +118,8 @@ export default function Page() {
       origin?: OriginInfo;
       destination?: OriginInfo;
       originInputMode?: "free" | "current_location" | undefined;
+      selectedSpotId?: string | null;
+      selectedSpotSource?: "map" | "chat" | null;
     };
   }) => {
     if (isLoadingRef.current) return;
@@ -148,8 +150,8 @@ export default function Page() {
           destination: mode === "after" ? params.userState.destination : undefined,
           originInputMode: params.userState.originInputMode,
           tripId: store.tripId,
-          selectedSpotId: store.selectedSpotId,
-          selectedSpotSource: store.selectedSpotSource,
+          selectedSpotId: params.userState.selectedSpotId ?? store.selectedSpotId,
+          selectedSpotSource: params.userState.selectedSpotSource ?? store.selectedSpotSource,
           // Afterモードの場合、ルート状態をuserStateに追加
           // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
           ...(mode === "after"
@@ -411,7 +413,16 @@ export default function Page() {
     setSpots,
   ]);
 
-  const onSend = useCallback(async (inputMessage: string) => {
+  type UserStateOverride = Partial<{
+    origin: OriginInfo;
+    destination: OriginInfo;
+    originInputMode: "free" | "current_location" | undefined;
+    tripId: string;
+    selectedSpotId: string | null;
+    selectedSpotSource: "map" | "chat" | null;
+  }>;
+
+  const onSend = useCallback(async (inputMessage: string, overrideUserState?: UserStateOverride) => {
     console.log("[onSend] called", { inputMessage, mode });
     // 現在地確定通知の場合は空文字でも許可
     if ((!inputMessage.trim() && !autoResendRef.current) || isLoading) return;
@@ -472,7 +483,17 @@ export default function Page() {
       console.log("[page.tsx] Is route edit intent?", isRouteEditIntent);
       console.log("[page.tsx] Is reverse command?", isReverseCommand);
       console.log("[page.tsx] Current routePlan:", currentRoutePlan?.planId);
-      
+
+      const storeUserState = {
+        origin: currentOrigin,
+        destination: mode === "after" ? currentDestination : undefined,
+        originInputMode: originInputMode,
+        tripId: store.tripId,
+        selectedSpotId: store.selectedSpotId,
+        selectedSpotSource: store.selectedSpotSource,
+      };
+      const mergedUserState = { ...storeUserState, ...(overrideUserState ?? {}) };
+
       const requestBody = isRouteEditIntent && currentRoutePlan && !isReverseCommand
         ? {
             routePlan: currentRoutePlan,
@@ -481,12 +502,7 @@ export default function Page() {
         : {
             messages: latestMessages,
             userState: {
-              origin: currentOrigin,
-              destination: mode === "after" ? currentDestination : undefined,
-              originInputMode: originInputMode,
-              tripId: store.tripId,
-              selectedSpotId: store.selectedSpotId,
-              selectedSpotSource: store.selectedSpotSource,
+              ...mergedUserState,
               // Afterモードの場合、ルート状態をuserStateに追加
               // 重要: routePlan.spotsを優先（Places API由来のスポットも含む）
               ...(mode === "after"
@@ -941,8 +957,11 @@ export default function Page() {
       const targetId = selectedSpotId;
       const send = async () => {
         setLastSelectionSentId(targetId);
+        await onSend("このスポットでお願いします", {
+          selectedSpotId: targetId,
+          selectedSpotSource: "map",
+        });
         setSelectedSpot(targetId);
-        await onSend("このスポットでお願いします");
         autoSendInFlightRef.current = false;
       };
       send();

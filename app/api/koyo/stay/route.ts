@@ -1171,7 +1171,8 @@ async function handleFacilityOperation(
  */
 async function handleStayPlanner(
   userMessages: ChatCompletionMessageParam[],
-  selectedSpotId?: string | null
+  selectedSpotId?: string | null,
+  selectedSpotSource?: "map" | "chat" | null
 ): Promise<NextResponse> {
   try {
     // 最後のユーザーメッセージを取得
@@ -1294,17 +1295,13 @@ async function handleStayPlanner(
       selectedSpot = hit;
     }
 
-    if (selectedSpot) {
+    if (selectedSpot && selectedSpotSource === "map") {
       const category = String(selectedSpot.category ?? "").trim();
       const highlight = category
         ? `ここは${category}として人気の場所です。`
         : "ここは落ち着いて過ごしやすい場所です。";
       const intro = `まずは『${selectedSpot.name}』を軸に動くのがおすすめです。${highlight}このあと近くで散策や休憩も組みやすいです。`;
-      const paragraphs = cleanReply.split(/\n\s*\n/);
-      cleanReply =
-        paragraphs.length > 1
-          ? [intro, ...paragraphs.slice(1)].join("\n\n")
-          : `${intro}\n\n${cleanReply}`.trim();
+      cleanReply = intro;
     }
 
     // Places API結果はreplyに追記しない（フェーズ1: AIは店名を知らない）
@@ -1431,6 +1428,10 @@ export async function POST(req: NextRequest) {
     let userMessage: string;
     const gender = body.gender;
     const selectedSpotId = body.userState?.selectedSpotId ?? null;
+    const selectedSpotSource = body.userState?.selectedSpotSource ?? null;
+    console.log("[stay] selectedSpotId:", selectedSpotId);
+    console.log("[stay] selectedSpotSource:", selectedSpotSource);
+    console.log("[stay] full userState:", body.userState);
 
     if ("messages" in body && Array.isArray(body.messages)) {
       // フロントの履歴を採用
@@ -1488,7 +1489,7 @@ export async function POST(req: NextRequest) {
     if (stopIntent) {
       // 外出プランとして処理（温泉・ランチ・カフェなど）
       console.log("[koyo-stay] ✅ BRANCH: outdoor_plan (stopIntent detected)");
-      return handleStayPlanner(userMessages, selectedSpotId);
+      return handleStayPlanner(userMessages, selectedSpotId, selectedSpotSource);
     } else if (isFacility) {
       // 館内施設案内（利用情報の問い合わせ）
       console.log("[koyo-stay] ✅ BRANCH: facility_query (isFacilityQuery=true)");
@@ -1496,7 +1497,7 @@ export async function POST(req: NextRequest) {
     } else {
       // デフォルトは外出プラン
       console.log("[koyo-stay] ✅ BRANCH: default_plan (fallback)");
-      return handleStayPlanner(userMessages, selectedSpotId);
+      return handleStayPlanner(userMessages, selectedSpotId, selectedSpotSource);
     }
   } catch (error: any) {
     console.error("[koyo-stay] error:", error);
