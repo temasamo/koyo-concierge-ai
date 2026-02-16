@@ -1285,6 +1285,12 @@ async function handleStayPlanner(
         found: !!hit,
         name: hit?.name ?? null,
       });
+      if (!hit && matchedSpots && matchedSpots.length > 0) {
+        console.log(
+          "[stay] matchedSpots ids",
+          matchedSpots.map((spot) => ({ id: spot.id, name: spot.name }))
+        );
+      }
       selectedSpot = hit;
     }
 

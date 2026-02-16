@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import BackgroundWrapper from "./koyo-lab-ui/BackgroundWrapper";
 import ChatContainer from "./koyo-lab-ui/ChatContainer";
@@ -52,6 +52,11 @@ export default function Page() {
   const setRoutePlan = useSpotStore((s) => s.setRoutePlan);
   const clearRoutePlan = useSpotStore((s) => s.clearRoutePlan);
   const routePlan = useSpotStore((s) => s.routePlan);
+  const selectedSpotId = useSpotStore((s) => s.selectedSpotId);
+  const selectedSpotSource = useSpotStore((s) => s.selectedSpotSource);
+  const lastSelectionSentId = useSpotStore((s) => s.lastSelectionSentId);
+  const setLastSelectionSentId = useSpotStore((s) => s.setLastSelectionSentId);
+  const setSelectedSpot = useSpotStore((s) => s.setSelectedSpot);
   // Phase2-2: 候補スポット管理
   const setOptionalSpots = useSpotStore((s) => s.setOptionalSpots);
   const optionalSpots = useSpotStore((s) => s.optionalSpots);
@@ -62,6 +67,8 @@ export default function Page() {
   const prevModeRef = useRef<KoyoMode>(mode);
   const prevPathnameRef = useRef<string | null>(null);
   const autoResendRef = useRef(false); // 現在地取得後の自動再送信を防ぐフラグ
+  const autoSendLastSentIdRef = useRef<string | null>(null);
+  const autoSendInFlightRef = useRef(false);
   
   useEffect(() => {
     const currentMessages = useMessageStore.getState().getMessages(mode);
@@ -96,12 +103,16 @@ export default function Page() {
 
   // --- 追加：送信中の状態を管理 ---
   const [isLoading, setIsLoading] = useState(false);
+  const isLoadingRef = useRef(false);
+  useEffect(() => {
+    isLoadingRef.current = isLoading;
+  }, [isLoading]);
 
   /**
    * userStateを明示的に指定してメッセージを送信する関数
    * 現在地取得後の自動再送信などで使用
    */
-  const sendMessageWithUserState = async (params: {
+  const sendMessageWithUserState = useCallback(async (params: {
     text: string;
     userState: {
       origin?: OriginInfo;
@@ -109,13 +120,14 @@ export default function Page() {
       originInputMode?: "free" | "current_location" | undefined;
     };
   }) => {
-    if (isLoading) return;
+    if (isLoadingRef.current) return;
     
     setIsLoading(true);
     
     try {
       // ユーザーのメッセージを追加
       addMessage(mode, { role: "user", content: params.text });
+      console.log("[Chat] add user message", { text: params.text });
       
       // 現在の messages を取得
       const currentMessages = useMessageStore.getState().getMessages(mode);
@@ -217,6 +229,7 @@ export default function Page() {
       };
       
       console.log("[page.tsx] sendMessageWithUserState - requestBody:", requestBody);
+      console.log("[API] request", { endpoint: apiEndpoint, payload: params });
       
       if (mode === "stay") {
         console.log("[Chat] sending userState", {
@@ -246,6 +259,11 @@ export default function Page() {
       }
       
       const data = await res.json();
+      console.log("[API] response", {
+        ok: res.ok,
+        status: res.status,
+        reply: data?.reply,
+      });
       
       // レスポンス処理（onSendと同じロジック）
       // originInputMode の扱い
@@ -357,6 +375,7 @@ export default function Page() {
       // AIの返答を追加
       if (data.reply) {
         addMessage(mode, { role: "assistant", content: data.reply });
+        console.log("[Chat] add assistant message", { text: data?.reply?.slice(0, 80) });
       }
       
       // Phase2-1: Afterモードでは data.spots（= optionalSpots）のみを使用
@@ -374,9 +393,26 @@ export default function Page() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [
+    addMessage,
+    applyRouteUpdate,
+    clearDestination,
+    clearOrigin,
+    clearOriginInputMode,
+    clearRouteInfo,
+    clearRoutePlan,
+    clearSpots,
+    mode,
+    setDestination,
+    setOptionalSpots,
+    setOrigin,
+    setOriginInputMode,
+    setRoutePlan,
+    setSpots,
+  ]);
 
-  const onSend = async (inputMessage: string) => {
+  const onSend = useCallback(async (inputMessage: string) => {
+    console.log("[onSend] called", { inputMessage, mode });
     // 現在地確定通知の場合は空文字でも許可
     if ((!inputMessage.trim() && !autoResendRef.current) || isLoading) return;
 
@@ -391,6 +427,7 @@ export default function Page() {
     try {
       // ① まずユーザーのメッセージを追加
       addMessage(mode, { role: "user", content: inputMessage });
+      console.log("[Chat] add user message", { text: inputMessage });
 
       // ② 現在の messages を安全に取得（最新値を参照）
       const currentMessages = useMessageStore.getState().getMessages(mode);
@@ -525,6 +562,7 @@ export default function Page() {
                 : {}),
             },
           };
+      console.log("[API] request", { endpoint: apiEndpoint, payload: requestBody });
       
       const res = await fetch(apiEndpoint, {
         method: "POST",
@@ -537,6 +575,11 @@ export default function Page() {
       }
 
       const data = await res.json();
+      console.log("[API] response", {
+        ok: res.ok,
+        status: res.status,
+        reply: data?.reply,
+      });
 
       // デバッグログ
       console.log("[page.tsx] API response:", data);
@@ -830,6 +873,7 @@ export default function Page() {
       // ④ AI の返答を追加
       if (data.reply) {
       addMessage(mode, { role: "assistant", content: data.reply });
+      console.log("[Chat] add assistant message", { text: data?.reply?.slice(0, 80) });
       }
     } catch (error) {
       console.error("Chat API error:", error);
@@ -846,7 +890,72 @@ export default function Page() {
 
     // 入力欄をクリア
     setInput("");
-  };
+  }, [
+    addMessage,
+    applyRouteUpdate,
+    clearDestination,
+    clearOrigin,
+    clearOriginInputMode,
+    clearSpots,
+    destination,
+    isLoading,
+    mode,
+    origin,
+    originInputMode,
+    routePlan,
+    sendMessageWithUserState,
+    setDestination,
+    setInput,
+    setIsLoading,
+    setOptionalSpots,
+    setOrigin,
+    setOriginInputMode,
+    setSpots,
+  ]);
+
+  useEffect(() => {
+    console.log("[AutoSend] check", {
+      mode,
+      selectedSpotId,
+      selectedSpotSource,
+      lastSelectionSentId,
+    });
+    if (
+      mode === "stay" &&
+      selectedSpotId &&
+      selectedSpotSource === "map" &&
+      lastSelectionSentId !== selectedSpotId
+    ) {
+      if (autoSendInFlightRef.current || autoSendLastSentIdRef.current === selectedSpotId) {
+        return;
+      }
+      autoSendLastSentIdRef.current = selectedSpotId;
+      autoSendInFlightRef.current = true;
+      console.log("[AutoSend] FIRE", {
+        mode,
+        selectedSpotId,
+        selectedSpotSource,
+        lastSelectionSentId,
+        message: "このスポットでお願いします",
+      });
+      const targetId = selectedSpotId;
+      const send = async () => {
+        setLastSelectionSentId(targetId);
+        setSelectedSpot(targetId, null);
+        await onSend("このスポットでお願いします");
+        autoSendInFlightRef.current = false;
+      };
+      send();
+    }
+  }, [
+    mode,
+    selectedSpotId,
+    selectedSpotSource,
+    lastSelectionSentId,
+    setLastSelectionSentId,
+    setSelectedSpot,
+    onSend,
+  ]);
 
   return (
     <div className="relative min-h-screen">

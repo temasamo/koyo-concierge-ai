@@ -61,11 +61,13 @@ type SpotStore = {
   tripId: string;
   selectedSpotId: string | null;
   selectedSpotSource: "map" | "chat" | null;
+  lastSelectionSentId: string | null;
   routeDraft: RouteDraft | null;
   mapFilters: MapFilters;
   lastEvent: { type: string; payload: any; ts: number } | null;
   startNewTrip: () => void;
   setSelectedSpotId: (id: string | null) => void;
+  setLastSelectionSentId: (id: string | null) => void;
   setMapFilters: (filters: Partial<MapFilters>) => void;
   clearMapFilters: () => void;
   setRouteDraft: (draft: RouteDraft | null) => void;
@@ -155,6 +157,7 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
   tripId: crypto.randomUUID(),
   selectedSpotId: null,
   selectedSpotSource: null,
+  lastSelectionSentId: null,
   routeDraft: null,
   mapFilters: {},
   lastEvent: null,
@@ -163,12 +166,13 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
       tripId: crypto.randomUUID(),
       selectedSpotId: null,
       selectedSpotSource: null,
+      lastSelectionSentId: null,
       routeDraft: null,
       lastEvent: null,
     });
   },
-  setSelectedSpotId: (id) =>
-    set({ selectedSpotId: id, selectedSpotSource: null }),
+  setSelectedSpotId: (id) => set({ selectedSpotId: id }),
+  setLastSelectionSentId: (id) => set({ lastSelectionSentId: id }),
   setMapFilters: (filters) =>
     set((state) => ({
       mapFilters: { ...state.mapFilters, ...filters },
@@ -193,6 +197,7 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
       tripId: crypto.randomUUID(),
       selectedSpotId: null,
       selectedSpotSource: null,
+      lastSelectionSentId: null,
     });
   },
   setSelectedSpot: (spotId, source) =>

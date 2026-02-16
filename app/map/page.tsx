@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import GoogleMap from "@/components/map/GoogleMap";
 import { useSpotStore } from "@/store/spots";
 import { KOYO_COORDINATES } from "@/constants/koyo";
@@ -9,6 +9,7 @@ import { buildGoogleMapsUrl } from "@/utils/googleMaps";
 
 export default function MapPage() {
   const router = useRouter();
+  const lastDblClickRef = useRef<{ spotId: string; ts: number } | null>(null);
   const spots = useSpotStore((state) => state.spots);
   const origin = useSpotStore((state) => state.origin);
   const destination = useSpotStore((state) => state.destination);
@@ -55,6 +56,16 @@ export default function MapPage() {
   };
 
   const handleSpotDoubleClick = (spotId: string) => {
+    const now = Date.now();
+    if (
+      lastDblClickRef.current &&
+      lastDblClickRef.current.spotId === spotId &&
+      now - lastDblClickRef.current.ts < 400
+    ) {
+      return;
+    }
+    lastDblClickRef.current = { spotId, ts: now };
+    console.log("[MapPage] dblclick spot => setSelectedSpot + push /", { spotId });
     setSelectedSpot(spotId, "map");
 
     // チャットページに戻る
