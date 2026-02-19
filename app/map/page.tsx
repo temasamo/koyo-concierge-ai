@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef } from "react";
 import GoogleMap from "@/components/map/GoogleMap";
 import { useSpotStore } from "@/store/spots";
 import { KOYO_COORDINATES } from "@/constants/koyo";
@@ -12,7 +12,6 @@ export default function MapPage() {
   const lastDblClickRef = useRef<{ spotId: string; ts: number } | null>(null);
   const spots = useSpotStore((state) => state.spots);
   const draftSpots = useSpotStore((state) => state.draftSpots);
-  const setDraft = useSpotStore((state) => state.setDraft);
   const origin = useSpotStore((state) => state.origin);
   const destination = useSpotStore((state) => state.destination);
   const routeInfo = useSpotStore((state) => state.routeInfo);
@@ -32,18 +31,6 @@ export default function MapPage() {
   console.log("[MapPage] Spots count:", spots.length);
   console.log("[MapPage] Origin:", origin);
   console.log("[MapPage] RouteInfo:", routeInfo);
-
-  // [TEMP] Step2(A) draft marker visibility check - remove later
-  useEffect(() => {
-    if (!spots || spots.length === 0) return;
-    const s = spots[0];
-    const shifted = {
-      ...s,
-      lat: (s.lat ?? 0) + 0.001,
-      lng: (s.lng ?? 0) + 0.001,
-    };
-    setDraft({ spots: [shifted] });
-  }, [spots, setDraft]);
 
   const handleOpenGoogleMaps = () => {
     if (!routeInfo) {
