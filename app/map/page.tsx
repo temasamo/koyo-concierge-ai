@@ -12,6 +12,7 @@ export default function MapPage() {
   const lastDblClickRef = useRef<{ spotId: string; ts: number } | null>(null);
   const spots = useSpotStore((state) => state.spots);
   const draftSpots = useSpotStore((state) => state.draftSpots);
+  const applyDraft = useSpotStore((state) => state.applyDraft);
   const origin = useSpotStore((state) => state.origin);
   const destination = useSpotStore((state) => state.destination);
   const routeInfo = useSpotStore((state) => state.routeInfo);
@@ -91,6 +92,14 @@ export default function MapPage() {
         )}
         </div>
         <div className="flex items-center gap-2">
+          {draftSpots.length > 0 && (
+            <button
+              onClick={applyDraft}
+              className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
+            >
+              この候補で確定
+            </button>
+          )}
           {routeInfo && routeInfo.waypoints.length > 0 && (
             <button
               onClick={() => setShowRouteList(true)}

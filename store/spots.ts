@@ -61,6 +61,7 @@ type SpotStore = {
   draftSpots: Spot[];
   setDraft: (draft: { routePlan?: RoutePlan | null; spots?: Spot[] }) => void;
   clearDraft: () => void;
+  applyDraft: () => void;
   
   // 共有Trip State（Step0）
   tripId: string;
@@ -168,6 +169,18 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
       draftSpots: "spots" in draft ? draft.spots ?? [] : state.draftSpots,
     })),
   clearDraft: () => set({ draftRoutePlan: null, draftSpots: [] }),
+  applyDraft: () => {
+    const { draftSpots, draftRoutePlan } = get();
+    if (!draftSpots || draftSpots.length === 0) {
+      if (!draftRoutePlan) return;
+    }
+    set({
+      spots: draftSpots ?? [],
+      routePlan: draftRoutePlan ?? get().routePlan,
+      draftRoutePlan: null,
+      draftSpots: [],
+    });
+  },
   
   // 共有Trip State（Step0）
   tripId: crypto.randomUUID(),
