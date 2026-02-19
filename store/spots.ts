@@ -56,6 +56,11 @@ type SpotStore = {
   setRoutePlan: (routePlan: RoutePlan | null) => void;
   clearRoutePlan: () => void;
   updateRoutePlan: (updates: Partial<RoutePlan>) => void;
+  // Step2(A): Draft（confirmedを触らない）
+  draftRoutePlan: RoutePlan | null;
+  draftSpots: Spot[];
+  setDraft: (draft: { routePlan?: RoutePlan | null; spots?: Spot[] }) => void;
+  clearDraft: () => void;
   
   // 共有Trip State（Step0）
   tripId: string;
@@ -152,6 +157,17 @@ export const useSpotStore = create<SpotStore>((set, get) => ({
       get().setRoutePlan(updated);
     }
   },
+
+  // Step2(A): Draft（confirmedを触らない）
+  draftRoutePlan: null,
+  draftSpots: [],
+  setDraft: (draft) =>
+    set((state) => ({
+      draftRoutePlan:
+        "routePlan" in draft ? draft.routePlan ?? null : state.draftRoutePlan,
+      draftSpots: "spots" in draft ? draft.spots ?? [] : state.draftSpots,
+    })),
+  clearDraft: () => set({ draftRoutePlan: null, draftSpots: [] }),
   
   // 共有Trip State（Step0）
   tripId: crypto.randomUUID(),

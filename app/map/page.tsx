@@ -11,6 +11,7 @@ export default function MapPage() {
   const router = useRouter();
   const lastDblClickRef = useRef<{ spotId: string; ts: number } | null>(null);
   const spots = useSpotStore((state) => state.spots);
+  const draftSpots = useSpotStore((state) => state.draftSpots);
   const origin = useSpotStore((state) => state.origin);
   const destination = useSpotStore((state) => state.destination);
   const routeInfo = useSpotStore((state) => state.routeInfo);
@@ -138,6 +139,7 @@ export default function MapPage() {
         <GoogleMap 
           center={center} 
           markers={spots} 
+          draftSpots={draftSpots}
           spots={spots}
           showRoute={true}
           koyoOrigin={center}

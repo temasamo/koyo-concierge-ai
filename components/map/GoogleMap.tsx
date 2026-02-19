@@ -130,6 +130,7 @@ function buildKoyoInfoWindowContent() {
 interface GoogleMapProps {
   center: { lat: number; lng: number };
   markers: Spot[];
+  draftSpots?: Spot[]; // Step2(A): draftレイヤー用
   spots?: Spot[]; // Directions API用（plan.spotsを渡す）
   showRoute?: boolean; // ルート表示の有効/無効（デフォルト: false）
   koyoOrigin?: { lat: number; lng: number }; // 古窯の座標（固定origin用）
@@ -145,6 +146,7 @@ interface GoogleMapProps {
 export default function GoogleMap({
   center,
   markers,
+  draftSpots,
   spots,
   showRoute = false,
   koyoOrigin,
@@ -160,6 +162,7 @@ export default function GoogleMap({
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+  const draftMarkersRef = useRef<any[]>([]);
   const infoWindowsRef = useRef<any[]>([]);
   const optionalMarkersRef = useRef<any[]>([]); // Phase2-1: 候補ピン（optionalSpots）専用
   const optionalInfoWindowsRef = useRef<any[]>([]); // Phase2-1: 候補ピンのInfoWindow専用
@@ -265,6 +268,8 @@ export default function GoogleMap({
         marker.setMap(null);
       });
       markersRef.current = [];
+      draftMarkersRef.current.forEach((marker) => marker.setMap(null));
+      draftMarkersRef.current = [];
       infoWindowsRef.current.forEach((iw) => iw.close());
       infoWindowsRef.current = [];
       // Directions APIのクリーンアップ
@@ -1390,6 +1395,47 @@ export default function GoogleMap({
       console.log("[Map] 複数マーカーのため bounds.fit で調整");
       }
   }, [routePoints, isLoading, googleMapsLibs, center, markers]); // routePointsが更新されたら再描画
+
+  // Step2(A): draftSpots を別レイヤーで描画
+  useEffect(() => {
+    if (!mapInstanceRef.current || isLoading || !googleMapsLibs) {
+      return;
+    }
+
+    const { Marker } = googleMapsLibs;
+    if (!Marker) {
+      return;
+    }
+
+    // 既存のdraftマーカーを全削除
+    draftMarkersRef.current.forEach((m) => m.setMap(null));
+    draftMarkersRef.current = [];
+
+    if (!draftSpots || draftSpots.length === 0) {
+      return;
+    }
+
+    const map = mapInstanceRef.current;
+    const google = (window as any).google;
+    const draftIcon = google?.maps
+      ? {
+          url: "http://maps.google.com/mapfiles/ms/icons/orange-dot.png",
+          scaledSize: new google.maps.Size(32, 32),
+        }
+      : undefined;
+
+    draftSpots.forEach((spot) => {
+      if (spot.lat == null || spot.lng == null) return;
+      const marker = new Marker({
+        position: { lat: spot.lat, lng: spot.lng },
+        map,
+        title: spot.name || "draft",
+        icon: draftIcon,
+        zIndex: 9999,
+      });
+      draftMarkersRef.current.push(marker);
+    });
+  }, [draftSpots, isLoading, googleMapsLibs]);
 
   // Phase2-1: 候補ピン（optionalSpots）を別描画（spots更新時に全削除→再描画）
   useEffect(() => {
