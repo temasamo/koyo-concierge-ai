@@ -44,6 +44,7 @@ export default function Page() {
   const setDestination = useSpotStore((s) => s.setDestination);
   const clearDestination = useSpotStore((s) => s.clearDestination);
   const setRouteInfo = useSpotStore((s) => s.setRouteInfo);
+  const setDraft = useSpotStore((s) => s.setDraft);
   const clearRouteInfo = useSpotStore((s) => s.clearRouteInfo);
   const routeInfo = useSpotStore((s) => s.routeInfo);
   const originInputMode = useSpotStore((s) => s.originInputMode);
@@ -374,6 +375,23 @@ export default function Page() {
         }
       }
       
+      // Step2(C): stayモードはAI返信受信時にdraftへ反映（候補UIは未実装）
+      if (mode === "stay" && data.reply) {
+        const responseSpots = Array.isArray(data.routePlan?.spots)
+          ? data.routePlan.spots
+          : Array.isArray(data.spots)
+            ? data.spots
+            : null;
+        if (responseSpots && responseSpots.length > 0) {
+          setDraft({ spots: responseSpots, routePlan: data.routePlan ?? null });
+        } else {
+          const { spots, routePlan } = useSpotStore.getState();
+          if (spots && spots.length > 0) {
+            setDraft({ spots, routePlan: routePlan ?? null });
+          }
+        }
+      }
+
       // AIの返答を追加
       if (data.reply) {
         addMessage(mode, { role: "assistant", content: data.reply });
@@ -411,6 +429,7 @@ export default function Page() {
     setOriginInputMode,
     setRoutePlan,
     setSpots,
+    setDraft,
   ]);
 
   type UserStateOverride = Partial<{
@@ -886,6 +905,23 @@ export default function Page() {
         }
       }
 
+      // Step2(C): stayモードはAI返信受信時にdraftへ反映（候補UIは未実装）
+      if (mode === "stay" && data.reply) {
+        const responseSpots = Array.isArray(data.routePlan?.spots)
+          ? data.routePlan.spots
+          : Array.isArray(data.spots)
+            ? data.spots
+            : null;
+        if (responseSpots && responseSpots.length > 0) {
+          setDraft({ spots: responseSpots, routePlan: data.routePlan ?? null });
+        } else {
+          const { spots, routePlan } = useSpotStore.getState();
+          if (spots && spots.length > 0) {
+            setDraft({ spots, routePlan: routePlan ?? null });
+          }
+        }
+      }
+
       // ④ AI の返答を追加
       if (data.reply) {
       addMessage(mode, { role: "assistant", content: data.reply });
@@ -927,6 +963,7 @@ export default function Page() {
     setOrigin,
     setOriginInputMode,
     setSpots,
+    setDraft,
   ]);
 
   useEffect(() => {
