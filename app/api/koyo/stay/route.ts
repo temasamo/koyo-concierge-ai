@@ -986,7 +986,7 @@ function matchAiSpotsToSupabase(aiSpots: any[], supabaseSpots: any[]): Spot[] | 
         );
       }
 
-      matchedSpots.push({
+        matchedSpots.push({
         id: matched.id,
         name: matched.name,
         lat: finalLat,
@@ -1002,7 +1002,6 @@ function matchAiSpotsToSupabase(aiSpots: any[], supabaseSpots: any[]): Spot[] | 
         drive_minutes: matched.drive_time
           ? parseInt(matched.drive_time.match(/\d+/)?.[0] || "0")
           : null,
-        source: "db",
       });
       usedSpotIds.add(matched.id);
       console.log(
