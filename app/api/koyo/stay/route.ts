@@ -8,6 +8,7 @@ import { KOYO_COORDINATES, SPOT_COORDINATE_FIXES } from "@/constants/koyo";
 import { integratePlaces } from "../_utils/places";
 import { detectStopIntent } from "../_utils/detectStopIntent";
 import type { StopIntent } from "@/types/route";
+import type { Spot } from "@/store/spots";
 import { detectModeMismatch } from "@/lib/koyo/intents";
 
 // モデルは環境変数で差し替え可能
@@ -692,12 +693,31 @@ ${spotListText}
       ],
       "description": "プランの説明"
     }
+  ],
+  "candidates": [
+    {
+      "id": "A",
+      "label": "王道",
+      "rationale": "1〜2行で簡潔な理由",
+      "spots": [
+        { "id": "SupabaseのID", "name": "Supabaseのname" }
+      ]
+    },
+    {
+      "id": "B",
+      "label": "通",
+      "rationale": "1〜2行で簡潔な理由",
+      "spots": [
+        { "id": "SupabaseのID", "name": "Supabaseのname" }
+      ]
+    }
   ]
 }
 
 **必須条件：**
 - 必ずJSON形式で返す（テキストのみは不可）
 - reply と plan の両方を含める
+- candidates を必ず含め、A/Bの2案を返す
 - **【最重要】replyには必ず提案するスポット名を自然な文章で含めること**
   - reply内でスポット名を言及する場合、必ず plan[0].spots[].name の正確な名称を使用すること
   - plan[0].spots に含まれるすべてのスポット名を reply に含めること
@@ -709,6 +729,9 @@ ${spotListText}
 - Supabase にないスポットは含めない（推測や略称は禁止）
 - スポット数は 3〜6 件程度
 - plan配列は1件以上返すこと
+- candidates は必ず2件（A/B）で、各候補はスポット3件にする
+- candidates のスポットは必ず Supabase の一覧から選ぶ（新規生成禁止）
+- A/Bはできるだけ重複を避け、性格の違いが伝わるようにする
 
 --------------------------------------------------
 【口調】
@@ -718,15 +741,44 @@ ${spotListText}
 
 --------------------------------------------------
 【出力の必須条件】
-1. まず、若女将としての丁寧な文章を返す
-2. **必ず文章の後にJSON形式でplan配列を返す**
-3. JSONは { "plan": [...] } の形式で返すこと
-4. JSONの前後に説明文やコードブロックは付けない
+1. JSONのみで返す（説明文・コードブロック禁止）
+2. JSONは { "reply": "...", "plan": [...], "candidates": [...] } の形式で返すこと
 
 以上のルールに従い、
 「旅中AIとしての丁寧な案内」＋「今日の行動プランJSON」を返してください。
 JSON形式で返さない場合は、プラン提案ができません。
 `;
+}
+
+type CandidateId = "A" | "B";
+type CandidateLabel = "王道" | "通";
+type Candidate = {
+  id: CandidateId;
+  label: CandidateLabel;
+  rationale: string;
+  spots: Spot[];
+};
+
+type StayPlannerResponse = {
+  reply: string;
+  usage?: OpenAI.Completions.CompletionUsage;
+  plan?: any[];
+  spots?: Spot[];
+  routeInfo?: {
+    origin: { lat: number; lng: number };
+    waypoints: { lat: number; lng: number; spotId?: string; name?: string }[];
+    destination: { lat: number; lng: number };
+  } | null;
+  candidates?: Candidate[];
+  debug?: any;
+};
+
+function stripCodeBlocks(reply: string): string {
+  let cleanedReply = reply;
+  cleanedReply = cleanedReply.replace(/```json\s*/g, "");
+  cleanedReply = cleanedReply.replace(/```\s*/g, "");
+  cleanedReply = cleanedReply.replace(/```[\s\S]*?```/g, "");
+  return cleanedReply;
 }
 
 /**
@@ -738,9 +790,7 @@ async function extractPlanFromReply(reply: string): Promise<any[] | undefined> {
     let planArray: any[] | undefined;
 
     // コードブロック（```json や ```）を除去
-    let cleanedReply = reply;
-    cleanedReply = cleanedReply.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-    cleanedReply = cleanedReply.replace(/```[\s\S]*?```/g, '');
+    let cleanedReply = stripCodeBlocks(reply);
 
     // デバッグログ
     console.log("[koyo-stay] AI reply (first 500 chars):", cleanedReply.substring(0, 500));
@@ -856,10 +906,124 @@ async function extractPlanFromReply(reply: string): Promise<any[] | undefined> {
 }
 
 /**
+ * AIの応答からcandidates配列を抽出する関数
+ * 形式: { candidates: [{ id, label, rationale, spots: [{ id, name }] }] }
+ */
+function extractCandidatesFromReply(reply: string): any[] | undefined {
+  try {
+    const cleanedReply = stripCodeBlocks(reply);
+    try {
+      const jsonResponse = JSON.parse(cleanedReply);
+      if (jsonResponse.candidates && Array.isArray(jsonResponse.candidates)) {
+        return jsonResponse.candidates;
+      }
+    } catch {
+      // JSON形式でない場合は、テキストから抽出を試す
+    }
+
+    const candidatesMatch = cleanedReply.match(/\{\s*"candidates"\s*:\s*\[[\s\S]*?\]\s*\}/);
+    if (candidatesMatch) {
+      try {
+        const candidatesObj = JSON.parse(candidatesMatch[0]);
+        if (candidatesObj.candidates && Array.isArray(candidatesObj.candidates)) {
+          return candidatesObj.candidates;
+        }
+      } catch (parseError) {
+        console.warn("[koyo-stay] Failed to parse candidates JSON:", parseError);
+      }
+    }
+
+    return undefined;
+  } catch (error) {
+    console.error("[koyo-stay] Candidates extraction error:", error);
+    return undefined;
+  }
+}
+
+async function getSupabaseSpots(): Promise<any[] | undefined> {
+  const supabase = getSupabaseClient();
+  const { data: supabaseSpots, error } = await supabase
+    .from("spot_master")
+    .select("*");
+
+  if (error) {
+    console.warn("[koyo-stay] Supabase error while fetching spots:", error);
+    return undefined;
+  }
+
+  return supabaseSpots || undefined;
+}
+
+function matchAiSpotsToSupabase(aiSpots: any[], supabaseSpots: any[]): Spot[] | undefined {
+  if (!aiSpots || aiSpots.length === 0) {
+    return undefined;
+  }
+
+  const matchedSpots: Spot[] = [];
+  const usedSpotIds = new Set<string>();
+
+  for (const aiSpot of aiSpots) {
+    let matched: any = null;
+
+    if (aiSpot?.id) {
+      matched = supabaseSpots.find(
+        (s) => !usedSpotIds.has(s.id) && s.id === aiSpot.id
+      );
+    }
+
+    if (!matched && aiSpot?.name) {
+      matched = matchSpot(aiSpot.name, supabaseSpots, usedSpotIds);
+    }
+
+    if (matched) {
+      const coordinateFix = SPOT_COORDINATE_FIXES[matched.id];
+      const finalLat = coordinateFix ? coordinateFix.lat : matched.lat;
+      const finalLng = coordinateFix ? coordinateFix.lng : matched.lng;
+
+      if (coordinateFix) {
+        console.log(
+          `[koyo-stay] Applying coordinate fix for "${matched.name}" (${matched.id}): ${matched.lat},${matched.lng} -> ${finalLat},${finalLng}`
+        );
+      }
+
+      matchedSpots.push({
+        id: matched.id,
+        name: matched.name,
+        lat: finalLat,
+        lng: finalLng,
+        category: matched.category,
+        city: matched.city,
+        season: matched.season,
+        drive_time: matched.drive_time,
+        walk_time: matched.walk_time,
+        stay_time: matched.stay_time,
+        url: matched.url,
+        tags: matched.tags,
+        drive_minutes: matched.drive_time
+          ? parseInt(matched.drive_time.match(/\d+/)?.[0] || "0")
+          : null,
+        source: "db",
+      });
+      usedSpotIds.add(matched.id);
+      console.log(
+        `[koyo-stay] Matched spot: "${aiSpot.name || aiSpot.id}" -> "${matched.name}" (Supabase ID: ${matched.id})`
+      );
+    } else {
+      console.warn(`[MATCH WARNING] No match found for: "${aiSpot?.name || aiSpot?.id}"`);
+    }
+  }
+
+  return matchedSpots.length > 0 ? matchedSpots : undefined;
+}
+
+/**
  * plan[0].spotsからスポットを抽出し、Supabaseとマッチングする関数
  * IDを最優先で使用し、一致しない場合はnameでマッチング
  */
-async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined> {
+async function extractAndMatchSpots(
+  planArray: any[],
+  supabaseSpotsOverride?: any[]
+): Promise<any[] | undefined> {
   try {
     if (!planArray || planArray.length === 0) {
       return undefined;
@@ -873,72 +1037,14 @@ async function extractAndMatchSpots(planArray: any[]): Promise<any[] | undefined
     const aiSpots = firstPlan.spots;
 
     // Supabaseから全スポットを取得
-    const supabase = getSupabaseClient();
-    const { data: supabaseSpots } = await supabase
-      .from("spot_master")
-      .select("*");
+    const supabaseSpots = supabaseSpotsOverride || (await getSupabaseSpots());
 
     if (!supabaseSpots || supabaseSpots.length === 0) {
       console.warn("[koyo-stay] No Supabase spots found");
       return undefined;
     }
 
-    // AIが返したスポットをSupabase形式に変換
-    const matchedSpots: any[] = [];
-    const usedSpotIds = new Set<string>();
-
-    for (const aiSpot of aiSpots) {
-      let matched: any = null;
-
-      // 1. IDでマッチングを試す（最優先）
-      if (aiSpot.id) {
-        matched = supabaseSpots.find(
-          (s) => !usedSpotIds.has(s.id) && s.id === aiSpot.id
-        );
-      }
-
-      // 2. IDでマッチしない場合は、nameで正規化マッチング
-      if (!matched && aiSpot.name) {
-        matched = matchSpot(aiSpot.name, supabaseSpots, usedSpotIds);
-      }
-
-      if (matched) {
-        // 座標の修正があるかチェック
-        const coordinateFix = SPOT_COORDINATE_FIXES[matched.id];
-        const finalLat = coordinateFix ? coordinateFix.lat : matched.lat;
-        const finalLng = coordinateFix ? coordinateFix.lng : matched.lng;
-        
-        if (coordinateFix) {
-          console.log(`[koyo-stay] Applying coordinate fix for "${matched.name}" (${matched.id}): ${matched.lat},${matched.lng} -> ${finalLat},${finalLng}`);
-        }
-        
-        // Supabase形式の完全なデータを使用
-        matchedSpots.push({
-          id: matched.id,
-          name: matched.name,
-          lat: finalLat,
-          lng: finalLng,
-          category: matched.category,
-          city: matched.city,
-          season: matched.season,
-          drive_time: matched.drive_time,
-          walk_time: matched.walk_time,
-          stay_time: matched.stay_time,
-          url: matched.url,
-          tags: matched.tags,
-          drive_minutes: matched.drive_time
-            ? parseInt(matched.drive_time.match(/\d+/)?.[0] || "0")
-            : null,
-          source: "db", // DBスポットであることを明示
-        });
-        usedSpotIds.add(matched.id);
-        console.log(`[koyo-stay] Matched spot: "${aiSpot.name || aiSpot.id}" -> "${matched.name}" (Supabase ID: ${matched.id})`);
-      } else {
-        console.warn(`[MATCH WARNING] No match found for: "${aiSpot.name || aiSpot.id}"`);
-      }
-    }
-
-    return matchedSpots.length > 0 ? matchedSpots : undefined;
+    return matchAiSpotsToSupabase(aiSpots, supabaseSpots);
   } catch (error) {
     console.error("[koyo-stay] Spot matching error:", error);
     return undefined;
@@ -1204,6 +1310,13 @@ async function handleStayPlanner(
     let planArray = await extractPlanFromReply(reply);
     console.log("[koyo-stay] Extracted plan array:", planArray ? `Found ${planArray.length} plans` : "No plan found");
 
+    // candidates配列を抽出
+    const rawCandidates = extractCandidatesFromReply(reply);
+    console.log(
+      "[koyo-stay] Extracted candidates:",
+      rawCandidates ? `Found ${rawCandidates.length} candidates` : "No candidates found"
+    );
+
     // plan配列が取得できない場合、古い形式（配列形式）を試す
     if (!planArray) {
       console.log("[koyo-stay] Trying to extract old format (array)...");
@@ -1235,15 +1348,25 @@ async function handleStayPlanner(
     // plan[0].spotsからスポットを抽出し、Supabaseとマッチング
     let matchedSpots: any[] | undefined;
     let finalPlan: any[] | undefined;
+    let candidates: Candidate[] | undefined;
     let placesApiFailed = false;
     let stopIntent: ReturnType<typeof detectStopIntent> = null;
     let selectedSpot: any | null = null;
+    const usePlacesApi = false; // Step2(D-1): Places APIは使用しない
+
+    let supabaseSpotsForMatch: any[] | undefined;
+    if (
+      (planArray && planArray.length > 0) ||
+      (rawCandidates && rawCandidates.length > 0)
+    ) {
+      supabaseSpotsForMatch = await getSupabaseSpots();
+    }
 
     if (planArray && planArray.length > 0) {
-      matchedSpots = await extractAndMatchSpots(planArray);
+      matchedSpots = await extractAndMatchSpots(planArray, supabaseSpotsForMatch);
       
       // 途中立ち寄り意図を検出してPlaces APIを呼び出す（extractAndMatchSpots後、ルート確定前）
-      if (matchedSpots && matchedSpots.length > 0) {
+      if (usePlacesApi && matchedSpots && matchedSpots.length > 0) {
         stopIntent = detectStopIntent(userMessage);
         const result = await integratePlaces(matchedSpots, stopIntent);
         matchedSpots = result.spots;
@@ -1268,6 +1391,44 @@ async function handleStayPlanner(
       } else {
         // スポットが0件の場合はplanを返さない
         finalPlan = undefined;
+      }
+    }
+
+    if (rawCandidates && rawCandidates.length > 0 && supabaseSpotsForMatch) {
+      const normalizedCandidates: Candidate[] = [];
+
+      rawCandidates.forEach((candidate) => {
+        const id: CandidateId | null =
+          candidate?.id === "A" || candidate?.id === "B" ? candidate.id : null;
+        if (!id) {
+          return;
+        }
+
+        const label: CandidateLabel =
+          candidate?.label === "王道" || candidate?.label === "通"
+            ? candidate.label
+            : id === "A"
+            ? "王道"
+            : "通";
+
+        const rationale = typeof candidate?.rationale === "string" ? candidate.rationale : "";
+        const candidateSpots = matchAiSpotsToSupabase(
+          Array.isArray(candidate?.spots) ? candidate.spots : [],
+          supabaseSpotsForMatch
+        );
+
+        if (candidateSpots && candidateSpots.length > 0) {
+          normalizedCandidates.push({
+            id,
+            label,
+            rationale,
+            spots: candidateSpots,
+          });
+        }
+      });
+
+      if (normalizedCandidates.length > 0) {
+        candidates = normalizedCandidates;
       }
     }
 
@@ -1315,7 +1476,7 @@ async function handleStayPlanner(
     );
 
     // レスポンスを構築
-    const response: any = {
+    const response: StayPlannerResponse = {
       reply: cleanReply,
       usage: completion.usage,
     };
@@ -1328,6 +1489,10 @@ async function handleStayPlanner(
     // フロントエンド互換性のため、plan[0].spotsから抽出した完全なSupabase形式のスポットデータを返す
     if (matchedSpots && matchedSpots.length > 0) {
       response.spots = matchedSpots;
+    }
+
+    if (candidates && candidates.length > 0) {
+      response.candidates = candidates;
     }
 
     // routeInfo を構築（Stayモード：originは古窯固定）
@@ -1381,6 +1546,18 @@ async function handleStayPlanner(
     });
 
     response.debug = { branch: "stay:outdoor_plan" };
+    console.log(
+      "[koyo-stay] Response example:",
+      JSON.stringify(
+        {
+          reply: response.reply,
+          candidates: response.candidates,
+          plan: response.plan,
+        },
+        null,
+        2
+      )
+    );
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("[koyo-stay] ❌ BRANCH: outdoor_plan ERROR:", error);
